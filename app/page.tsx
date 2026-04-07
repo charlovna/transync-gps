@@ -94,6 +94,7 @@ export default function Home() {
   const [tripStarted, setTripStarted]           = useState(false);
   const [recenterRequest, setRecenterRequest]   = useState(0);
   const [activeTripId, setActiveTripId]         = useState<number | null>(null);
+  const [zoomRequest, setZoomRequest]           = useState<{ delta: number; seq: number }>({ delta: 0, seq: 0 });
 
   // ── Weather ───────────────────────────────────────────────────────────────
   const [weatherData, setWeatherData]           = useState<WeatherData | null>(null);
@@ -130,6 +131,12 @@ export default function Home() {
   const [aiInsight, setAiInsight]               = useState("");
   const [aiInsightLoading, setAiInsightLoading] = useState(false);
   const aiInsightFetchedRef                     = useRef(false); // guard: fires once per route
+  const streamBufferRef                         = useRef("");    // raw received text
+  const displayLenRef                           = useRef(0);    // chars currently shown
+  const typewriterRef                           = useRef<number | null>(null);
+
+  // ── Dynamic ETA — original speed stored at trip start ────────────────────
+  const originalEtaMpsRef = useRef(0); // avg speed in m/s from initial route
 
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? "";
   const isValid    = useMemo(() => destination.trim().length > 0, [destination]);
@@ -291,14 +298,52 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPosition, tripStarted]);
 
-  // ── AI insight streaming ──────────────────────────────────────────────────
+  // ── Dynamic ETA — recomputes every 15s while trip is active ─────────────
+  useEffect(() => {
+    if (!tripStarted || !routeData) return;
+    const tick = () => {
+      const elapsedMin = (Date.now() - tripStartTimeRef.current) / 60000;
+      // If we have distance-to-destination and avg speed, compute remaining ETA
+      if (originalEtaMpsRef.current > 0 && currentPosition && routeData.destination_position) {
+        const remaining = getDistanceMeters(currentPosition, routeData.destination_position);
+        const etaMin = Math.max(1, Math.round(remaining / originalEtaMpsRef.current / 60));
+        setRouteData((prev) => prev ? { ...prev, eta_minutes: etaMin } : prev);
+      } else {
+        // Fallback: count down from original ETA by elapsed time
+        const original = routeData.eta_minutes ?? 0;
+        const remaining = Math.max(1, Math.round(original - elapsedMin));
+        setRouteData((prev) => prev ? { ...prev, eta_minutes: remaining } : prev);
+      }
+    };
+    tick(); // immediate first tick
+    const id = window.setInterval(tick, 15000);
+    return () => window.clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripStarted]);
+
+  // ── AI insight streaming — smooth typewriter ─────────────────────────────
   const fetchAiInsight = async (data: RouteData) => {
-    // Guard: only fire once per route fetch — prevents StrictMode double-invoke
-    // wiping accumulated text mid-stream
     if (aiInsightFetchedRef.current) return;
     aiInsightFetchedRef.current = true;
+    streamBufferRef.current = "";
+    displayLenRef.current = 0;
     setAiInsightLoading(true);
-    // aiInsight already cleared by handleGetRoute before this call
+
+    // Typewriter: reveals one char every 18ms from the buffer as it fills
+    const startTypewriter = () => {
+      if (typewriterRef.current !== null) return;
+      typewriterRef.current = window.setInterval(() => {
+        const buf = streamBufferRef.current;
+        const cur = displayLenRef.current;
+        if (cur >= buf.length) return;
+        // Advance by 1–3 chars per tick to feel fluid, not robotic
+        const step = buf[cur] === " " ? 2 : 1;
+        const next = Math.min(cur + step, buf.length);
+        displayLenRef.current = next;
+        setAiInsight(buf.slice(0, next));
+      }, 18);
+    };
+
     try {
       const res = await fetch("/api/advisory", {
         method: "POST",
@@ -314,15 +359,32 @@ export default function Home() {
       if (!res.ok || !res.body) return;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let text = "";
+      startTypewriter();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        text += decoder.decode(value, { stream: true });
-        setAiInsight(text);
+        streamBufferRef.current += decoder.decode(value, { stream: true });
       }
-    } catch { /* fail silently — insight never breaks core navigation */ }
-    finally { setAiInsightLoading(false); }
+      // Stream done — let typewriter finish revealing remaining buffer
+      const flush = window.setInterval(() => {
+        const buf = streamBufferRef.current;
+        if (displayLenRef.current >= buf.length) {
+          window.clearInterval(flush);
+          if (typewriterRef.current !== null) {
+            window.clearInterval(typewriterRef.current);
+            typewriterRef.current = null;
+          }
+          setAiInsight(buf); // ensure full text is shown
+          setAiInsightLoading(false);
+        }
+      }, 40);
+    } catch {
+      if (typewriterRef.current !== null) {
+        window.clearInterval(typewriterRef.current);
+        typewriterRef.current = null;
+      }
+      setAiInsightLoading(false);
+    }
   };
 
   // ── Waypoint handlers ─────────────────────────────────────────────────────
@@ -381,8 +443,14 @@ export default function Home() {
   const handleStartTrip = async () => {
     tripStartTimeRef.current = Date.now();
     arrivalTriggeredRef.current = false;
+    // Store avg speed (m/s) from original route for live ETA recompute
+    if (routeData?.eta_minutes && routeData?.distance_km) {
+      originalEtaMpsRef.current = (routeData.distance_km * 1000) / (routeData.eta_minutes * 60);
+    } else {
+      originalEtaMpsRef.current = 0;
+    }
     setTripStarted(true); setHudMinimized(false);
-    setShowPlanner(false); setShowAdvisory(false); // ← Step 3: hide planner entirely
+    setShowPlanner(false); setShowAdvisory(false);
     setRecenterRequest((prev) => prev + 1);
     if (routeData) {
       const tripId = await startTripBackend(routeData);
@@ -430,12 +498,15 @@ export default function Home() {
   if (!authChecked) return null;
 
   return (
-    <div className="relative w-full overflow-hidden bg-slate-950 text-white" style={{ height: "100dvh" }}>
+    <div className="relative w-full overflow-hidden bg-slate-950 text-white" style={{ height: "100dvh" }} aria-label="Transync navigation">
+      <div aria-label="Navigation map" aria-hidden={!isLoaded} role="img">
       <MapView
         routeData={routeData} loading={loading} tripStarted={tripStarted}
         gyroEnabled={gyroEnabled} recenterRequest={recenterRequest}
         isLoaded={isLoaded} userPos={currentPosition}
+        zoomRequest={zoomRequest}
       />
+      </div>
       <div className="pointer-events-none absolute inset-0 bg-slate-950/10" />
 
       {/* ══ STEP 3 — NAVIGATION HUD ══ */}
@@ -446,12 +517,14 @@ export default function Home() {
           gyroEnabled={gyroEnabled} onGyroToggle={() => setGyroEnabled((p) => !p)}
           onRecenter={() => setRecenterRequest((p) => p + 1)}
           onEndTrip={handleEndTrip}
+          onZoomIn={() => setZoomRequest((p) => ({ delta: 1, seq: p.seq + 1 }))}
+          onZoomOut={() => setZoomRequest((p) => ({ delta: -1, seq: p.seq + 1 }))}
         />
       )}
 
       {/* ══ STEPS 1 & 2 — PLANNER OVERLAY ══ */}
       {showPlanner && (
-        <div className="absolute inset-0 z-20 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" as const }}>
+        <div role="main" aria-label="Route planner" className="absolute inset-0 z-20 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" as const }}>
           <div className="min-h-full px-4 py-4 pb-10 md:flex md:items-center md:justify-center md:p-6">
 
             {/* Step 1 — Search screen */}

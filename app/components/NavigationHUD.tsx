@@ -1,6 +1,12 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import type { RouteData, RiskBadge } from "../lib/types";
+
+// Safe-area bottom offset for devices with home indicator
+const SAFE_BOTTOM = "env(safe-area-inset-bottom, 0px)";
+// Gap between FABs and top of HUD panel
+const FAB_GAP = 12;
 
 type Props = {
   routeData: RouteData | null;
@@ -12,6 +18,8 @@ type Props = {
   onGyroToggle: () => void;
   onRecenter: () => void;
   onEndTrip: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
 };
 
 export default function NavigationHUD({
@@ -19,35 +27,90 @@ export default function NavigationHUD({
   hudMinimized, onToggleHud,
   gyroEnabled, onGyroToggle,
   onRecenter, onEndTrip,
+  onZoomIn, onZoomOut,
 }: Props) {
+  const hudRef = useRef<HTMLDivElement>(null);
+  const [hudHeight, setHudHeight] = useState(hudMinimized ? 72 : 220);
+
+  // Measure actual HUD height so FABs never overlap it
+  useEffect(() => {
+    const el = hudRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect.height;
+      if (h) setHudHeight(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // FABs sit FAB_GAP above the HUD panel
+  const fabBottom = `calc(${hudHeight}px + ${FAB_GAP}px + ${SAFE_BOTTOM})`;
+
+  const fabBase: React.CSSProperties = {
+    position: "fixed",
+    zIndex: 40,
+    bottom: fabBottom,
+    borderRadius: 18,
+    backdropFilter: "blur(16px)",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.45), -2px -2px 6px rgba(255,255,255,0.05)",
+    cursor: "pointer",
+    // 44×44 minimum touch target (fixing-accessibility)
+    minWidth: 48,
+    minHeight: 48,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    transition: "bottom 0.35s cubic-bezier(0.4,0,0.2,1)",
+    willChange: "bottom",
+  };
+
   return (
     <>
+      {/* ── Zoom In FAB ── */}
+      <button onClick={onZoomIn} aria-label="Zoom in" className="btn-tap"
+        style={{ ...fabBase, right: 16, background: "rgba(2,6,23,0.92)", border: "1px solid rgba(56,189,248,0.25)", padding: "12px" }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          <line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+        </svg>
+      </button>
+
+      {/* ── Zoom Out FAB ── */}
+      <button onClick={onZoomOut} aria-label="Zoom out" className="btn-tap"
+        style={{ ...fabBase, right: 72, background: "rgba(2,6,23,0.92)", border: "1px solid rgba(56,189,248,0.18)", padding: "12px" }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          <line x1="8" y1="11" x2="14" y2="11"/>
+        </svg>
+      </button>
+
       {/* ── Recenter FAB ── */}
-      <button onClick={onRecenter} aria-label="Recenter" className="btn-tap"
-        style={{ position: "fixed", right: 16, bottom: hudMinimized ? 96 : 228, zIndex: 40, borderRadius: 18, border: "1px solid rgba(56,189,248,0.25)", background: "rgba(2,6,23,0.92)", padding: "13px", backdropFilter: "blur(16px)", boxShadow: "0 8px 24px rgba(0,0,0,0.45), -2px -2px 6px rgba(255,255,255,0.05)", cursor: "pointer", transition: "bottom 0.35s cubic-bezier(0.4,0,0.2,1)" }}>
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.2" strokeLinecap="round">
+      <button onClick={onRecenter} aria-label="Recenter map on my location" className="btn-tap"
+        style={{ ...fabBase, right: 128, background: "rgba(2,6,23,0.92)", border: "1px solid rgba(56,189,248,0.25)", padding: "12px" }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
         </svg>
       </button>
 
       {/* ── Gyro FAB ── */}
-      <button onClick={onGyroToggle} aria-label="Toggle gyroscopic mode" className="btn-tap"
-        style={{ position: "fixed", right: 76, bottom: hudMinimized ? 96 : 228, zIndex: 40, borderRadius: 18, border: gyroEnabled ? "1px solid rgba(34,211,238,0.4)" : "1px solid rgba(255,255,255,0.1)", background: gyroEnabled ? "rgba(6,182,212,0.18)" : "rgba(2,6,23,0.92)", padding: "13px", backdropFilter: "blur(16px)", boxShadow: "0 8px 24px rgba(0,0,0,0.45), -2px -2px 6px rgba(255,255,255,0.05)", cursor: "pointer", transition: "bottom 0.35s cubic-bezier(0.4,0,0.2,1)" }}>
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={gyroEnabled ? "#22d3ee" : "#94a3b8"} strokeWidth="2.2" strokeLinecap="round">
+      <button onClick={onGyroToggle} aria-label={gyroEnabled ? "Disable gyroscopic mode" : "Enable gyroscopic mode"} className="btn-tap"
+        style={{ ...fabBase, right: 184, border: gyroEnabled ? "1px solid rgba(34,211,238,0.4)" : "1px solid rgba(255,255,255,0.1)", background: gyroEnabled ? "rgba(6,182,212,0.18)" : "rgba(2,6,23,0.92)", padding: "12px" }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={gyroEnabled ? "#22d3ee" : "#94a3b8"} strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
           <circle cx="12" cy="12" r="10"/><path d="M16.24 7.76l-2.12 6.36-6.36 2.12 2.12-6.36 6.36-2.12z"/>
         </svg>
       </button>
 
       {/* ── Bottom HUD ── */}
-      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 30, borderRadius: "24px 24px 0 0", background: "rgba(2,6,23,0.97)", border: "1px solid rgba(255,255,255,0.08)", borderBottom: "none", backdropFilter: "blur(24px)", boxShadow: "0 -8px 48px rgba(0,0,0,0.55)", transition: "all 0.35s cubic-bezier(0.4,0,0.2,1)" }}>
+      <div ref={hudRef} style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 30, borderRadius: "24px 24px 0 0", background: "rgba(2,6,23,0.97)", border: "1px solid rgba(255,255,255,0.08)", borderBottom: "none", backdropFilter: "blur(24px)", boxShadow: "0 -8px 48px rgba(0,0,0,0.55)", paddingBottom: SAFE_BOTTOM }}>
 
         {/* drag handle */}
-        <button onClick={onToggleHud} className="hud-handle-wrap">
+        <button onClick={onToggleHud} className="hud-handle-wrap" aria-label={hudMinimized ? "Expand navigation panel" : "Minimize navigation panel"} aria-expanded={!hudMinimized}>
           <div className="hud-handle" />
         </button>
 
         {!hudMinimized ? (
-          <div style={{ padding: "4px 20px 36px" }}>
+          <div style={{ padding: "4px 20px 24px" }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
               <div style={{ minWidth: 0 }}>
                 <p style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 2 }}>Navigating to</p>
@@ -80,13 +143,13 @@ export default function NavigationHUD({
                 <p style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.55 }}>{routeData.advisory_text}</p>
               </div>
             )}
-            <button onClick={onEndTrip} className="btn-tap"
+            <button onClick={onEndTrip} className="btn-tap" aria-label="End trip"
               style={{ width: "100%", borderRadius: 18, padding: "16px", fontSize: 15, fontWeight: 700, color: "#fca5a5", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", cursor: "pointer" }}>
               End Trip
             </button>
           </div>
         ) : (
-          <div style={{ padding: "4px 20px 28px", display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ padding: "4px 20px 20px", display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <p style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {routeData?.destination_label || destination}
@@ -96,7 +159,7 @@ export default function NavigationHUD({
                 <span style={{ color: "#475569", marginLeft: 8, fontFamily: "'DM Sans', sans-serif", fontWeight: 400 }}>· {routeData?.risk_level || "—"} traffic</span>
               </p>
             </div>
-            <button onClick={onEndTrip} className="btn-tap"
+            <button onClick={onEndTrip} className="btn-tap" aria-label="End trip"
               style={{ flexShrink: 0, borderRadius: 14, padding: "10px 16px", fontSize: 13, fontWeight: 700, color: "#fca5a5", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", cursor: "pointer" }}>
               End
             </button>

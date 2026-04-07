@@ -124,6 +124,7 @@ export default function RegisterPage() {
         transform: phase >= 1 ? "translateY(0)" : "translateY(-20px)",
         opacity: phase >= 1 ? 1 : 0,
         transition: "transform 0.5s ease, opacity 0.4s ease",
+        willChange: "transform, opacity",
       }}>
         <div style={{
           width: 56, height: 56, borderRadius: 16,
@@ -147,6 +148,7 @@ export default function RegisterPage() {
         opacity: cardVisible ? 1 : 0,
         transition: "transform 0.55s cubic-bezier(0.34,1.2,0.64,1), opacity 0.45s ease",
         maxHeight: "calc(100dvh - 140px)", overflowY: "auto",
+        willChange: "transform, opacity",
       }}>
         <div style={{
           borderRadius: 28, border: "1px solid rgba(56,189,248,0.12)",
@@ -169,12 +171,12 @@ export default function RegisterPage() {
 
             {/* Username */}
             <div>
-              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Username</label>
+              <label htmlFor="reg-username" style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Username</label>
               <div style={inputWrapStyle("username")}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
                 </svg>
-                <input type="text" value={username} onChange={(e) => setUsername(e.target.value)}
+                <input id="reg-username" type="text" value={username} onChange={(e) => setUsername(e.target.value)}
                   onFocus={() => setFocusedField("username")} onBlur={() => setFocusedField(null)}
                   placeholder="your_username" autoComplete="username"
                   style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 15, color: "#f1f5f9", fontFamily: "'DM Sans', sans-serif" }} />
@@ -183,12 +185,12 @@ export default function RegisterPage() {
 
             {/* Email */}
             <div>
-              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Email Address</label>
+              <label htmlFor="reg-email" style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Email Address</label>
               <div style={inputWrapStyle("email")}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
                 </svg>
-                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                <input id="reg-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
                   onFocus={() => setFocusedField("email")} onBlur={() => setFocusedField(null)}
                   placeholder="you@example.com" autoComplete="email"
                   style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 15, color: "#f1f5f9", fontFamily: "'DM Sans', sans-serif" }} />
@@ -197,17 +199,18 @@ export default function RegisterPage() {
 
             {/* Password */}
             <div>
-              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Password</label>
+              <label htmlFor="reg-password" style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Password</label>
               <div style={inputWrapStyle("password")}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                 </svg>
-                <input type={showPassword ? "text" : "password"} value={password}
+                <input id="reg-password" type={showPassword ? "text" : "password"} value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   onFocus={() => setFocusedField("password")} onBlur={() => setFocusedField(null)}
                   placeholder="Min. 6 characters" autoComplete="new-password"
                   style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 15, color: "#f1f5f9", fontFamily: "'DM Sans', sans-serif" }} />
                 <button type="button" onClick={() => setShowPassword((p) => !p)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
                   style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}>
                   {showPassword ? (
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
@@ -226,15 +229,16 @@ export default function RegisterPage() {
 
             {/* Confirm Password */}
             <div>
-              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Confirm Password</label>
+              <label htmlFor="reg-confirm" style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Confirm Password</label>
               <div style={inputWrapStyle("confirm", !!(confirmPassword && confirmPassword !== password))}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                 </svg>
-                <input type={showPassword ? "text" : "password"} value={confirmPassword}
+                <input id="reg-confirm" type={showPassword ? "text" : "password"} value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   onFocus={() => setFocusedField("confirm")} onBlur={() => setFocusedField(null)}
                   placeholder="Re-enter password" autoComplete="new-password"
+                  aria-invalid={!!(confirmPassword && confirmPassword !== password)}
                   style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 15, color: "#f1f5f9", fontFamily: "'DM Sans', sans-serif" }} />
                 {confirmPassword.length > 0 && (
                   <div style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: confirmPassword === password ? "#10b981" : "#ef4444" }} />
@@ -243,13 +247,13 @@ export default function RegisterPage() {
             </div>
 
             {error && (
-              <div style={{ borderRadius: 12, padding: "10px 14px", border: "1px solid rgba(239,68,68,0.3)", background: "rgba(127,29,29,0.35)", fontSize: 13, color: "#fca5a5", fontFamily: "'DM Sans', sans-serif" }}>
+              <div role="alert" aria-live="assertive" style={{ borderRadius: 12, padding: "10px 14px", border: "1px solid rgba(239,68,68,0.3)", background: "rgba(127,29,29,0.35)", fontSize: 13, color: "#fca5a5", fontFamily: "'DM Sans', sans-serif" }}>
                 {error}
               </div>
             )}
 
             {success && (
-              <div style={{ borderRadius: 12, padding: "10px 14px", border: "1px solid rgba(16,185,129,0.3)", background: "rgba(6,78,59,0.35)", fontSize: 13, color: "#6ee7b7", fontFamily: "'DM Sans', sans-serif" }}>
+              <div role="status" aria-live="polite" style={{ borderRadius: 12, padding: "10px 14px", border: "1px solid rgba(16,185,129,0.3)", background: "rgba(6,78,59,0.35)", fontSize: 13, color: "#6ee7b7", fontFamily: "'DM Sans', sans-serif" }}>
                 {success}
               </div>
             )}

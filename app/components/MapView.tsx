@@ -44,6 +44,7 @@ type MapViewProps = {
   recenterRequest?: number;
   isLoaded?: boolean;
   userPos?: LatLng | null;
+  zoomRequest?: { delta: number; seq: number };
 };
 
 const midnightIndigoMapStyle: google.maps.MapTypeStyle[] = [
@@ -91,7 +92,7 @@ function getDistanceMeters(from: LatLng, to: LatLng) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function smoothHeading(prev: number, next: number, factor = 0.22) {
+function smoothHeading(prev: number, next: number, factor = 0.10) {
   const delta = ((next - prev + 540) % 360) - 180;
   return (prev + delta * factor + 360) % 360;
 }
@@ -104,6 +105,7 @@ export default function MapView({
   recenterRequest = 0,
   isLoaded = false,
   userPos = null,
+  zoomRequest,
 }: MapViewProps) {
   const [heading, setHeading] = useState(0);
   const [mapsReady, setMapsReady] = useState(false);
@@ -122,7 +124,7 @@ export default function MapView({
     const prevPos = previousUserPosRef.current;
     if (prevPos) {
       const dist = getDistanceMeters(prevPos, userPos);
-      if (dist >= 4) {
+      if (dist >= 8) {
         const nextBearing = getBearing(prevPos, userPos);
         setHeading((prev) => smoothHeading(prev, nextBearing));
       }
@@ -211,6 +213,14 @@ export default function MapView({
     }
   }, [tripStarted, userPos, gyroEnabled, heading, mapsReady]);
 
+  // ── Zoom in / out requests ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!mapRef.current || !mapsReady || !zoomRequest) return;
+    const map = mapRef.current;
+    const current = map.getZoom() ?? 15;
+    map.setZoom(Math.min(21, Math.max(3, current + zoomRequest.delta)));
+  }, [zoomRequest, mapsReady]);
+
   // ── Camera: recenter button ──────────────────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !userPos || recenterRequest === 0 || !mapsReady) return;
@@ -277,9 +287,12 @@ export default function MapView({
           fullscreenControl: false,
           mapTypeControl: false,
           clickableIcons: false,
-          zoomControl: false,        // hidden — using recenter FAB instead
-          gestureHandling: "greedy", // single-finger pan on mobile
-          disableDefaultUI: true,    // clean map, no Google chrome
+          zoomControl: false,         // using custom FABs below
+          scrollwheel: true,          // desktop scroll-to-zoom
+          gestureHandling: "greedy",  // single-finger pan + pinch-zoom on mobile
+          disableDefaultUI: true,
+          minZoom: 3,
+          maxZoom: 21,
         }}
       >
         {/* Live user position */}

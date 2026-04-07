@@ -98,7 +98,7 @@ export default function AdvisoryPanel({
           <p style={{ fontSize: 14, color: "#c4b5fd", lineHeight: 1.7, margin: 0 }}>
             {aiInsight}
             {aiInsightLoading && (
-              <span style={{ display: "inline-block", width: 2, height: 13, background: "#818cf8", marginLeft: 2, verticalAlign: "text-bottom", animation: "blink 1s step-end infinite" }} />
+              <span style={{ display: "inline-block", width: 2, height: "1em", background: "#818cf8", marginLeft: 3, verticalAlign: "text-bottom", borderRadius: 1, animation: "blink 0.9s ease-in-out infinite" }} />
             )}
           </p>
         </div>

@@ -94,6 +94,7 @@ export default function LoginPage() {
         opacity: loginVisible ? 1 : 0,
         transition: "opacity 1.5s ease",
         pointerEvents: loginVisible ? "auto" : "none",
+        willChange: "opacity",
       }}>
     <div style={{
       position: "relative", width: "100%", height: "100dvh",
@@ -145,6 +146,7 @@ export default function LoginPage() {
         opacity: logoDropped ? 1 : 0,
         transition: "transform 0.65s cubic-bezier(0.34,1.56,0.64,1), opacity 0.45s ease",
         paddingBottom: cardVisible ? 8 : 32,
+        willChange: "transform, opacity",
       }}>
         <div style={{
           position: "absolute", width: 110, height: 110, borderRadius: "50%",
@@ -153,19 +155,19 @@ export default function LoginPage() {
           opacity: logoDropped ? 1 : 0, transition: "opacity 0.8s ease 0.3s",
         }} />
         <div style={{
-          width: logoDropped && cardVisible ? 68 : 78,
-          height: logoDropped && cardVisible ? 68 : 78,
-          borderRadius: logoDropped && cardVisible ? 20 : 24,
+          width: 78, height: 78, borderRadius: 24,
           background: "linear-gradient(135deg,#10b981 0%,#06b6d4 50%,#6366f1 100%)",
           display: "flex", alignItems: "center", justifyContent: "center",
           boxShadow: "0 12px 40px rgba(6,182,212,0.4), 0 4px 12px rgba(0,0,0,0.4), -4px -4px 8px rgba(255,255,255,0.05), 4px 4px 12px rgba(0,0,0,0.5)",
-          transition: "width 0.5s ease, height 0.5s ease, border-radius 0.5s ease",
+          transform: logoDropped && cardVisible ? "scale(0.872)" : "scale(1)",
+          transition: "transform 0.5s ease",
           position: "relative", zIndex: 1,
+          willChange: "transform",
         }}>
-          <svg width={logoDropped && cardVisible ? 32 : 38} height={logoDropped && cardVisible ? 32 : 38}
+          <svg width="38" height="38"
             viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.7"
             strokeLinecap="round" strokeLinejoin="round"
-            style={{ transition: "width 0.5s ease, height 0.5s ease" }}>
+            style={undefined}>
             <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
             <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
             <line x1="12" y1="22.08" x2="12" y2="12"/>
@@ -195,6 +197,7 @@ export default function LoginPage() {
         transform: cardVisible ? "translateY(0)" : "translateY(40px)",
         opacity: cardVisible ? 1 : 0,
         transition: "transform 0.65s cubic-bezier(0.34,1.2,0.64,1), opacity 0.55s ease",
+        willChange: "transform, opacity",
       }}>
         <div style={{
           borderRadius: 28, border: "1px solid rgba(56,189,248,0.12)",
@@ -215,12 +218,12 @@ export default function LoginPage() {
 
             {/* Username */}
             <div>
-              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Username</label>
+              <label htmlFor="login-username" style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Username</label>
               <div style={inputWrapStyle("username")}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
                 </svg>
-                <input type="text" value={username} onChange={(e) => setUsername(e.target.value)}
+                <input id="login-username" type="text" value={username} onChange={(e) => setUsername(e.target.value)}
                   onFocus={() => setFocusedField("username")} onBlur={() => setFocusedField(null)}
                   placeholder="your_username" autoComplete="username" disabled={!inputsActive}
                   style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 15, color: "#f1f5f9", fontFamily: "'DM Sans', sans-serif", opacity: inputsActive ? 1 : 0.5 }} />
@@ -229,12 +232,12 @@ export default function LoginPage() {
 
             {/* Email */}
             <div>
-              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Email Address</label>
+              <label htmlFor="login-email" style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Email Address</label>
               <div style={inputWrapStyle("email")}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
                 </svg>
-                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                <input id="login-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
                   onFocus={() => setFocusedField("email")} onBlur={() => setFocusedField(null)}
                   placeholder="you@example.com" autoComplete="email" disabled={!inputsActive}
                   style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 15, color: "#f1f5f9", fontFamily: "'DM Sans', sans-serif", opacity: inputsActive ? 1 : 0.5 }} />
@@ -243,17 +246,18 @@ export default function LoginPage() {
 
             {/* Password */}
             <div>
-              <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Password</label>
+              <label htmlFor="login-password" style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.2em", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>Password</label>
               <div style={inputWrapStyle("password")}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                 </svg>
-                <input type={showPassword ? "text" : "password"} value={password}
+                <input id="login-password" type={showPassword ? "text" : "password"} value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   onFocus={() => setFocusedField("password")} onBlur={() => setFocusedField(null)}
                   placeholder="••••••••" autoComplete="current-password" disabled={!inputsActive}
                   style={{ flex: 1, background: "transparent", border: "none", outline: "none", fontSize: 15, color: "#f1f5f9", fontFamily: "'DM Sans', sans-serif", opacity: inputsActive ? 1 : 0.5 }} />
                 <button type="button" onClick={() => setShowPassword((p) => !p)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
                   style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center" }}>
                   {showPassword ? (
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2" strokeLinecap="round">
@@ -293,7 +297,7 @@ export default function LoginPage() {
             </button>
 
             {error && (
-              <div style={{ borderRadius: 12, padding: "10px 14px", border: "1px solid rgba(239,68,68,0.3)", background: "rgba(127,29,29,0.35)", fontSize: 13, color: "#fca5a5", fontFamily: "'DM Sans', sans-serif" }}>
+              <div role="alert" aria-live="assertive" style={{ borderRadius: 12, padding: "10px 14px", border: "1px solid rgba(239,68,68,0.3)", background: "rgba(127,29,29,0.35)", fontSize: 13, color: "#fca5a5", fontFamily: "'DM Sans', sans-serif" }}>
                 {error}
               </div>
             )}

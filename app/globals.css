@@ -160,8 +160,8 @@ body {
 
 /* ── AI insight cursor blink ───────────────────────────────────────────── */
 @keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0; }
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0; }
 }
 
 @keyframes ai-pulse {
@@ -179,4 +179,28 @@ body {
 }
 .star-btn:hover {
   transform: scale(1.2);
+}
+
+/* ── prefers-reduced-motion — pause all non-essential looping animations ── */
+@media (prefers-reduced-motion: reduce) {
+  .btn-gradient {
+    animation: none;
+    background: linear-gradient(90deg, #06b6d4, #6366f1);
+  }
+  .synced-star {
+    animation: none;
+    filter: drop-shadow(0 0 4px rgba(167,139,250,0.6));
+  }
+  .hud-handle-wrap:hover .hud-handle {
+    transition: none;
+  }
+  .chip-dest {
+    transition: none;
+  }
+  .chip-dest:hover {
+    transform: none;
+  }
+  .btn-tap:active {
+    transform: none;
+  }
 }
