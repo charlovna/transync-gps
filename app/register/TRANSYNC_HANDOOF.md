@@ -35,10 +35,10 @@ transync/
           route.ts          ← Server-side Claude AI streaming endpoint
       components/
         LoadingScreen.tsx   ← Compass loading animation (8s, chaos → snap → crossfade into login)
-        MapView.tsx         ← Google Maps component (receives isLoaded + userPos as props)
+        MapView.tsx         ← Google Maps component (receives isLoaded + userPos + zoomRequest as props)
         PlannerPanel.tsx    ← Step 1: search form, waypoint stops, weather, popular destinations, recent searches, trip history
         AdvisoryPanel.tsx   ← Step 2: back arrow, multi-stop badge, ETA/traffic tiles, advisory text, AI insight card, gyro toggle, Start Trip
-        NavigationHUD.tsx   ← Step 3: bottom HUD (minimize/expand) + Recenter FAB + Gyro FAB
+        NavigationHUD.tsx   ← Step 3: bottom HUD (minimize/expand) + Recenter/Zoom/Gyro FABs (ResizeObserver-driven placement)
         ArrivalOverlay.tsx  ← Arrival screen: checkmark, stats, star rating, Plan New Route
         ProfileSheet.tsx    ← Full-screen profile overlay: avatar, stats, change password, sign out
         EnvTest.tsx
@@ -130,7 +130,7 @@ npx kill-port 8000
 
 ### All API endpoints:
 - `GET /` — health check
-- `POST /route` — main route advisory. Takes `{ origin, destination, mode, waypoints? }`. Returns polyline, ETA, risk level, weather-aware advisory text, departure recommendation, steps, origin/destination positions, and `waypoints[]` positions.
+- `POST /route` — main route advisory. Takes `{ origin, destination, mode, waypoints? }`. Returns polyline, ETA, risk level, weather-aware advisory text, departure recommendation, steps, origin/destination positions, `distance_km`, and `waypoints[]` positions.
 - `GET /geocode/reverse?lat=&lng=` — reverse geocodes GPS coords via server key. Returns `{ address }`.
 - `GET /weather?lat=&lng=` — fetches current weather from Open-Meteo (no API key needed). Returns `{ temperature, feels_like, weather_code, condition: { label, icon }, precipitation, wind_speed }`.
 - `POST /auth/register` — creates user. Fields: `username`, `email`, `password`. Returns JWT + user.
@@ -160,7 +160,7 @@ trips    (id, user_id, origin_label, destination_label, eta_minutes, risk_level,
 ### Route geometry fix (do not revert):
 `origin_position` / `destination_position` use `leg.start_location` / `leg.end_location` — NOT geocoding API positions.
 
-### Multi-stop routing (added):
+### Multi-stop routing:
 - `getDirections()` accepts optional `waypoints[]` string array — passed as `waypoints=addr1|addr2` to Google Directions API
 - For single-leg routes: Distance Matrix API used for accurate traffic duration
 - For multi-leg routes: leg durations aggregated directly from Directions API response
@@ -209,7 +209,7 @@ End Trip / Arrival    →  showPlanner = true, showAdvisory = false  (back to St
 
 ---
 
-## 8. MULTI-STOP ROUTING (added)
+## 8. MULTI-STOP ROUTING
 
 ### Types (`lib/types.ts`):
 ```ts
@@ -221,6 +221,7 @@ export type WaypointStop = {
 
 // RouteData now includes:
 waypoints?: WaypointStop[];
+distance_km?: number;
 ```
 
 ### State in `page.tsx`:
@@ -273,6 +274,7 @@ type MapViewProps = {
   recenterRequest?: number;
   isLoaded?: boolean;
   userPos?: LatLng | null;
+  zoomRequest?: { delta: number; seq: number };
 };
 ```
 
@@ -290,10 +292,22 @@ const { isLoaded } = useJsApiLoader({
 options={{
   styles: midnightIndigoMapStyle,
   disableDefaultUI: true,
-  gestureHandling: "greedy",
-  zoomControl: false,
+  gestureHandling: "greedy",  // single-finger pan + pinch-zoom on mobile
+  scrollwheel: true,          // desktop scroll-to-zoom
+  zoomControl: false,         // custom FABs used instead
+  minZoom: 3,
+  maxZoom: 21,
 }}
 ```
+
+### Zoom via `zoomRequest`:
+- `page.tsx` holds `zoomRequest: { delta: number, seq: number }` state
+- FABs call `setZoomRequest((p) => ({ delta: ±1, seq: p.seq + 1 }))` 
+- MapView `useEffect` fires on `seq` change, applies `map.setZoom(current + delta)`
+
+### Heading smoothing:
+- Factor `0.10` (was 0.22) — slower, eliminates jitter
+- Minimum movement threshold: `8m` (was 4m) — ignores GPS noise
 
 ---
 
@@ -337,7 +351,7 @@ Each `WaypointRow` in PlannerPanel has its own identical Autocomplete instance, 
 - **Next.js API route:** `app/api/advisory/route.ts` — server-side, keeps `ANTHROPIC_API_KEY` secret
 - **Model:** `claude-sonnet-4-6` via `@anthropic-ai/sdk`
 - **Trigger:** Called non-blocking immediately after `setRouteData(data)` in `handleGetRoute`
-- **Transport:** Streams plain text — typewriter effect in the browser
+- **Transport:** Streams plain text → smooth typewriter effect in the browser
 
 ### API route:
 - POST — accepts `{ destination, eta_minutes, risk_level, advisory_text, weather }`
@@ -358,11 +372,39 @@ const fetchAiInsight = async (data: RouteData) => {
 aiInsightFetchedRef.current = false;
 ```
 
+### Smooth typewriter implementation:
+```tsx
+// streamBufferRef — raw text received from stream
+// displayLenRef   — chars currently shown in UI
+// typewriterRef   — setInterval handle
+
+const startTypewriter = () => {
+  typewriterRef.current = window.setInterval(() => {
+    const buf = streamBufferRef.current;
+    const cur = displayLenRef.current;
+    if (cur >= buf.length) return;
+    const step = buf[cur] === " " ? 2 : 1; // slightly faster on spaces = natural pacing
+    const next = Math.min(cur + step, buf.length);
+    displayLenRef.current = next;
+    setAiInsight(buf.slice(0, next));
+  }, 18); // 18ms per tick ≈ smooth character reveal
+};
+// On stream end: flush interval checks displayLen >= bufLen, then clears typewriter
+```
+Buffer fills from network stream; typewriter interval reads it. Decoupled — typewriter always catches up even on fast connections.
+
+### Cursor (AdvisoryPanel):
+```tsx
+<span style={{ display: "inline-block", width: 2, height: "1em", background: "#818cf8",
+  marginLeft: 3, verticalAlign: "text-bottom", borderRadius: 1,
+  animation: "blink 0.9s ease-in-out infinite" }} />
+```
+`blink` keyframe uses `ease-in-out` (not `step-end`) for soft professional fade — disappears when `aiInsightLoading` is false.
+
 ### UI (AdvisoryPanel):
 - Card: `border: 1px solid rgba(99,102,241,0.28)`, indigo/violet gradient background
 - Header: `✦ Synced Insight` label (not "Transync AI") in `#a78bfa`
 - `.synced-star` class on ✦ icon — `violet-pulse` keyframe animation
-- Text streams with blinking cursor while loading, cursor disappears when done
 
 ### Env var:
 ```
@@ -372,7 +414,44 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ---
 
-## 13. ARRIVAL DETECTION
+## 13. DYNAMIC ETA
+
+ETA updates every 15 seconds while a trip is active — mirrors Google Maps behavior.
+
+### Implementation (page.tsx):
+```tsx
+// At handleStartTrip: record avg speed from original route
+if (routeData?.eta_minutes && routeData?.distance_km) {
+  originalEtaMpsRef.current = (routeData.distance_km * 1000) / (routeData.eta_minutes * 60);
+}
+
+// useEffect — runs every 15s during trip
+useEffect(() => {
+  if (!tripStarted || !routeData) return;
+  const tick = () => {
+    if (originalEtaMpsRef.current > 0 && currentPosition && routeData.destination_position) {
+      // Primary: distance-to-destination / avg speed
+      const remaining = getDistanceMeters(currentPosition, routeData.destination_position);
+      const etaMin = Math.max(1, Math.round(remaining / originalEtaMpsRef.current / 60));
+      setRouteData((prev) => prev ? { ...prev, eta_minutes: etaMin } : prev);
+    } else {
+      // Fallback: count down from original ETA by elapsed time
+      const elapsedMin = (Date.now() - tripStartTimeRef.current) / 60000;
+      const remaining = Math.max(1, Math.round((routeData.eta_minutes ?? 0) - elapsedMin));
+      setRouteData((prev) => prev ? { ...prev, eta_minutes: remaining } : prev);
+    }
+  };
+  tick(); // immediate on trip start
+  const id = window.setInterval(tick, 15000);
+  return () => window.clearInterval(id);
+}, [tripStarted]); // intentionally minimal deps
+```
+
+ETA displayed in NavigationHUD (expanded + minimized rows) and updates live.
+
+---
+
+## 14. ARRIVAL DETECTION
 
 - `useEffect` watches `[currentPosition, tripStarted]`
 - Within 150m of `routeData.destination_position` → arrival fires
@@ -385,7 +464,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ---
 
-## 14. LOADING SCREEN
+## 15. LOADING SCREEN
 
 ### File: `app/components/LoadingScreen.tsx`
 
@@ -406,7 +485,7 @@ t=6500ms:  fading=true (opacity: 0 over 1.5s) + onFading() → login fades in si
 t=8000ms:  onComplete() → LoadingScreen unmounts
 ```
 
-### SVG compass (viewBox 0 0 200 200):
+### SVG compass (viewBox 0 0 200 200, all coords from design skill §9):
 - Outer ring: cx=100, cy=100, r=85 — pulses via `ring-pulse` keyframe
 - Inner ring: cx=100, cy=100, r=65
 - Crosshair: H (35,100)→(165,100), V (100,35)→(100,165)
@@ -414,6 +493,7 @@ t=8000ms:  onComplete() → LoadingScreen unmounts
 - Cardinal labels: N=(100,8), E=(196,104), S=(100,198), W=(4,104)
 - Needle paths: North `M 100,30 L 106,100 L 100,115 L 94,100 Z` (cyan), South `M 100,115 L 106,100 L 100,170 L 94,100 Z` (slate)
 - Transform origin: 100px 100px
+- Pin wobble durations: N=1.8s, E=1.4s, S=2.2s, W=1.6s
 
 ### Crossfade integration in `login/page.tsx`:
 ```tsx
@@ -427,7 +507,8 @@ const [loginVisible, setLoginVisible] = useState(false);
       onComplete={() => setShowLoader(false)}
     />
   )}
-  <div style={{ opacity: loginVisible ? 1 : 0, transition: "opacity 1.5s ease", pointerEvents: loginVisible ? "auto" : "none" }}>
+  <div style={{ opacity: loginVisible ? 1 : 0, transition: "opacity 1.5s ease",
+    pointerEvents: loginVisible ? "auto" : "none", willChange: "opacity" }}>
     {/* login page JSX */}
   </div>
 </>
@@ -435,14 +516,59 @@ const [loginVisible, setLoginVisible] = useState(false);
 
 ---
 
-## 15. UI POLISH — DESIGN SYSTEM
+## 16. NAVIGATIONHUD.tsx — FAB PLACEMENT
+
+### Problem solved: FABs overlapping HUD
+FAB `bottom` was hardcoded to `228px` — broke when HUD had advisory text (taller). Fixed with `ResizeObserver`:
+
+```tsx
+const hudRef = useRef<HTMLDivElement>(null);
+const [hudHeight, setHudHeight] = useState(72);
+
+useEffect(() => {
+  const ro = new ResizeObserver((entries) => {
+    const h = entries[0]?.contentRect.height;
+    if (h) setHudHeight(h);
+  });
+  ro.observe(hudRef.current!);
+  return () => ro.disconnect();
+}, []);
+
+const fabBottom = `calc(${hudHeight}px + 12px + env(safe-area-inset-bottom, 0px))`;
+```
+
+### FAB layout (right → left, all `minWidth/Height: 48px`):
+| FAB | Right offset | Function |
+|---|---|---|
+| Zoom In | 16px | `onZoomIn` |
+| Zoom Out | 72px | `onZoomOut` |
+| Recenter | 128px | `onRecenter` |
+| Gyro | 184px | `onGyroToggle` |
+
+### Props added to NavigationHUD:
+```tsx
+onZoomIn: () => void;
+onZoomOut: () => void;
+```
+
+### Wired in page.tsx:
+```tsx
+const [zoomRequest, setZoomRequest] = useState<{ delta: number; seq: number }>({ delta: 0, seq: 0 });
+
+onZoomIn={() => setZoomRequest((p) => ({ delta: 1, seq: p.seq + 1 }))}
+onZoomOut={() => setZoomRequest((p) => ({ delta: -1, seq: p.seq + 1 }))}
+```
+
+---
+
+## 17. UI POLISH — DESIGN SYSTEM
 
 Full aesthetic: dark neumorphism × futurism × bold typography. Reference `transync_design_skill.md` for exact values.
 
 ### Typography:
-- **Display / numbers / wordmark:** `'Orbitron'`
+- **Display / numbers / wordmark:** `'Orbitron'` (all components except LoadingScreen which uses `'Syne'`)
 - **Body / UI:** `'DM Sans'`
-- CSS class: `.font-orbitron` for Orbitron
+- CSS class: `.font-orbitron` for Orbitron; `fontFamily: "'Syne'..."` inline for LoadingScreen
 
 ### Font import in `globals.css`:
 ```css
@@ -451,12 +577,8 @@ Full aesthetic: dark neumorphism × futurism × bold typography. Reference `tran
 
 ### Dark Neumorphism (in `globals.css`):
 ```css
-.neu-extruded {
-  box-shadow: -4px -4px 8px rgba(255,255,255,0.05), 4px 4px 12px rgba(0,0,0,0.5);
-}
-.neu-inset {
-  box-shadow: inset -2px -2px 6px rgba(255,255,255,0.04), inset 2px 2px 8px rgba(0,0,0,0.5);
-}
+.neu-extruded { box-shadow: -4px -4px 8px rgba(255,255,255,0.05), 4px 4px 12px rgba(0,0,0,0.5); }
+.neu-inset    { box-shadow: inset -2px -2px 6px rgba(255,255,255,0.04), inset 2px 2px 8px rgba(0,0,0,0.5); }
 ```
 
 ### Input focus state (inline, via `focusedField` state — NOT CSS `:focus`):
@@ -474,7 +596,7 @@ const inputWrapStyle = (field): CSSProperties => ({
 ### CSS utility classes in `globals.css`:
 | Class | Use |
 |---|---|
-| `.btn-gradient` | All primary CTAs — animated color sweep |
+| `.btn-gradient` | All primary CTAs — animated color sweep left→right |
 | `.btn-tap` | Active scale(0.97) on any tappable element |
 | `.neu-extruded` | Cards, chips, avatar, FABs |
 | `.neu-inset` | Input wrappers (static) |
@@ -490,12 +612,28 @@ const inputWrapStyle = (field): CSSProperties => ({
 | LoadingScreen | 100 |
 | ProfileSheet | 60 |
 | ArrivalOverlay | 55 |
-| NavigationHUD | 30 |
+| NavigationHUD FABs | 40 |
+| NavigationHUD panel | 30 |
 | Planner overlay | 20 |
+
+### Accessibility fixes applied (fixing-accessibility skill):
+- All form inputs have `id` + `htmlFor` linking labels
+- Icon-only buttons have `aria-label`
+- Error divs have `role="alert"` + `aria-live="assertive"`
+- Success divs have `role="status"` + `aria-live="polite"`
+- Confirm password field has `aria-invalid` when mismatched
+- HUD drag handle has `aria-expanded` + `aria-label`
+- Decorative SVG icons have `aria-hidden="true"`
+
+### Motion performance fixes (fixing-motion-performance skill):
+- `willChange: "transform, opacity"` on all animated elements during motion
+- Logo box animates via `transform: scale()` — not `width/height` (layout props)
+- `scrollwheel: true` + `gestureHandling: "greedy"` for map zoom
+- `prefers-reduced-motion` respected in `globals.css`
 
 ---
 
-## 16. GPS / NAVIGATION BEHAVIOR
+## 18. GPS / NAVIGATION BEHAVIOR
 
 - **Single GPS watcher** in `page.tsx` only — starts on mount, NOT gated by `authChecked`
 - `currentPosition` passed to `MapView` as `userPos` prop
@@ -503,22 +641,25 @@ const inputWrapStyle = (field): CSSProperties => ({
 - Navigation pan throttled to 800ms
 - Gyro mode: `map.setHeading(heading)` + `map.setTilt(45)`
 - GPS options: `{ enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }`
+- Heading smoothing factor: `0.10` — lower = smoother arrow rotation
+- Movement threshold: `8m` — ignores GPS jitter under 8m
 - Desktop testing: mock GPS in DevTools → Sensors → Lat 13.9411, Lng 121.1631
 
 ---
 
-## 17. MOBILE CONSIDERATIONS
+## 19. MOBILE CONSIDERATIONS
 
 - All pages use `height: 100dvh`
 - `WebkitOverflowScrolling: "touch"` on scrollable containers
-- `gestureHandling: "greedy"` on map
-- Bottom HUD: `position: fixed`, `borderRadius: "24px 24px 0 0"`
-- FABs shift up/down with HUD state
+- `gestureHandling: "greedy"` on map — single-finger pan + pinch-zoom
+- Bottom HUD: `position: fixed`, `borderRadius: "24px 24px 0 0"`, `paddingBottom: env(safe-area-inset-bottom)`
+- FABs use `env(safe-area-inset-bottom)` in their `bottom` calculation
+- Minimum touch target: `48×48px` on all FABs and interactive buttons
 - No desktop-only layouts — single-column, mobile-first
 
 ---
 
-## 18. PWA MANIFEST
+## 20. PWA MANIFEST
 
 - `public/manifest.json` — name, theme/bg `#020617`, display `standalone`
 - `layout.tsx` — `<meta name="theme-color">`, manifest link, apple-web-app meta
@@ -526,7 +667,7 @@ const inputWrapStyle = (field): CSSProperties => ({
 
 ---
 
-## 19. KNOWN ISSUES FIXED
+## 21. KNOWN ISSUES FIXED
 
 | Issue | Fix Applied |
 |---|---|
@@ -545,10 +686,18 @@ const inputWrapStyle = (field): CSSProperties => ({
 | Advisory card + search form shown together | `showAdvisory` state — PlannerPanel and AdvisoryPanel render exclusively |
 | page.tsx too large (1100+ lines) | Split into 5 component files + shared types |
 | `openai` package unused | Removed; replaced with `@anthropic-ai/sdk` |
+| ETA static during navigation | Dynamic ETA: `getDistanceMeters()` / avg speed, updates every 15s |
+| AI typewriter clunky / flickering | Decoupled buffer+typewriter: 18ms interval, step-end → ease-in-out cursor |
+| Vehicle heading jittery | Smoothing factor 0.22→0.10, threshold 4m→8m |
+| FABs overlap HUD when advisory text present | `ResizeObserver` on HUD ref drives `fabBottom` dynamically |
+| Map not zoomable with buttons | Zoom FABs added; `zoomRequest` prop fires `map.setZoom()` in MapView |
+| Pinch-zoom broken on mobile | `gestureHandling: "greedy"` + `scrollwheel: true` — both confirmed active |
+| Form inputs not keyboard accessible | `id`/`htmlFor` linked, `aria-label` on icon buttons, `role="alert"` on errors |
+| Logo box animating width/height (layout) | Replaced with `transform: scale()` — compositor-only |
 
 ---
 
-## 20. DEPLOYMENT — NEXT STEPS (planned)
+## 22. DEPLOYMENT — NEXT STEPS (planned)
 
 **Frontend → Vercel**
 - Push `transync-gps` to GitHub
@@ -567,7 +716,7 @@ const inputWrapStyle = (field): CSSProperties => ({
   - `JWT_SECRET`
   - `FRONTEND_URL` (point to Vercel domain)
   - `PORT` (Railway sets this automatically — use `process.env.PORT`)
-- Update Google Maps server key IP restriction to Railway's static IP (or remove IP restriction for prototype)
+- Update Google Maps server key IP restriction to Railway's static IP (or remove for prototype)
 - SQLite: works on Railway but data resets on redeploy — acceptable for 5-user prototype
 - Update `CORS` origin in `server.js` to allow Vercel domain
 
@@ -582,7 +731,7 @@ const inputWrapStyle = (field): CSSProperties => ({
 
 ---
 
-## 21. WHAT IS NOT YET BUILT
+## 23. WHAT IS NOT YET BUILT
 
 - PWA PNG icons (192×192, 512×512) — needed for iOS install prompt
 - Distinct ETAs for private vs public transport (jeepney mode)
@@ -593,19 +742,20 @@ const inputWrapStyle = (field): CSSProperties => ({
 - PWA service worker / offline support
 - Arrival feedback persistence (currently local state only — not saved to backend)
 - Manual starting point override for desktop testing
+- Light mode (deliberately deferred — inline styles throughout require CSS variable refactor)
 
 ---
 
-## 22. THESIS / RESEARCH FRAMING
+## 24. THESIS / RESEARCH FRAMING
 
 - **Problem:** Existing navigation tools don't provide separate ETAs for private vs public vehicles, no localized delay formulas for Lipa City conditions, no unified commuter advisory platform
 - **Solution framing:** Hybrid navigation architecture — deterministic geospatial APIs (Google Maps) + AI-driven interpretive advisory layer (Claude) + real-time weather integration
 - **Geographic context:** Lipa City, Batangas; students and daily commuters; De La Salle Lipa area
-- **Key differentiators over standard Google Maps:** traffic + weather synthesis, AI-generated commuter advisories, transport-mode-specific ETAs (planned), multi-stop routing
+- **Key differentiators over standard Google Maps:** traffic + weather synthesis, AI-generated commuter advisories, dynamic ETA updates, multi-stop routing, transport-mode-specific ETAs (planned)
 
 ---
 
-## 23. CODING PREFERENCES
+## 25. CODING PREFERENCES
 
 - **Always provide full updated files** — never partial snippets that require manual merging
 - **Mobile-first** — all UI decisions default to mobile viewport
@@ -617,6 +767,7 @@ const inputWrapStyle = (field): CSSProperties => ({
 - **focusedField pattern** — use React state for input focus rings, not CSS `:focus` (inline styles don't support pseudo-selectors)
 - **aiInsightFetchedRef pattern** — use a ref guard identical to `weatherFetchedRef` whenever preventing double-invoke in StrictMode
 - **WaypointRow pattern** — each repeating input with its own Autocomplete uses a self-contained sub-component with its own `useEffect` and `useRef`
+- **ResizeObserver pattern** — use ResizeObserver (not hardcoded px) whenever a fixed element's position depends on another element's dynamic height
 
 ---
 

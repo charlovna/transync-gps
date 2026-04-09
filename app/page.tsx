@@ -499,7 +499,7 @@ export default function Home() {
 
   return (
     <div className="relative w-full overflow-hidden bg-slate-950 text-white" style={{ height: "100dvh" }} aria-label="Transync navigation">
-      <div aria-label="Navigation map" aria-hidden={!isLoaded} role="img">
+      <div style={{ position: "absolute", inset: 0 }} aria-label="Navigation map" aria-hidden={!isLoaded} role="img" data-lenis-prevent>
       <MapView
         routeData={routeData} loading={loading} tripStarted={tripStarted}
         gyroEnabled={gyroEnabled} recenterRequest={recenterRequest}

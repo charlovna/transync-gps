@@ -56,7 +56,7 @@ export default function ProfileSheet({
   ];
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "#020617", overflowY: "auto", WebkitOverflowScrolling: "touch" as const, fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif" }}>
+    <div data-lenis-prevent style={{ position: "fixed", inset: 0, zIndex: 60, background: "#020617", overflowY: "auto", WebkitOverflowScrolling: "touch" as const, fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif" }}>
       <div style={{ minHeight: "100%", paddingBottom: 40 }}>
 
         {/* ── Header ── */}
