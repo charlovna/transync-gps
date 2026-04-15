@@ -74,6 +74,7 @@ export default function Home() {
   // ── Core state ────────────────────────────────────────────────────────────
   const [destination, setDestination]           = useState("");
   const [destinationCoords, setDestinationCoords] = useState<LatLng | null>(null);
+  const [travelMode, setTravelMode]             = useState<"driving" | "bicycling" | "walking">("driving");
   const [waypointInputs, setWaypointInputs]     = useState<WaypointStop[]>([]);
   const [routeData, setRouteData]               = useState<RouteData | null>(null);
   const [loading, setLoading]                   = useState(false);
@@ -137,6 +138,15 @@ export default function Home() {
 
   // ── Dynamic ETA — original speed stored at trip start ────────────────────
   const originalEtaMpsRef = useRef(0); // avg speed in m/s from initial route
+
+  // ── Adaptive routing ──────────────────────────────────────────────────────
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
+  const [toastMessage, setToastMessage]             = useState("");
+  const [toastVisible, setToastVisible]             = useState(false);
+  const reEvalIntervalRef                           = useRef<number | null>(null);
+  const toastTimerRef                               = useRef<number | null>(null);
+  // Always-fresh ref for values needed inside the re-eval interval callback
+  const reEvalDataRef = useRef<{ currentPosition: LatLng | null; routeData: RouteData | null; backendUrl: string }>({ currentPosition: null, routeData: null, backendUrl: "" });
 
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? "";
   const isValid    = useMemo(() => destination.trim().length > 0, [destination]);
@@ -321,6 +331,52 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripStarted]);
 
+  // ── Keep reEvalDataRef in sync (no re-render cost) ───────────────────────
+  useEffect(() => {
+    reEvalDataRef.current = { currentPosition, routeData, backendUrl };
+  });
+
+  // ── Toast helper ──────────────────────────────────────────────────────────
+  const showToast = (message: string) => {
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    setToastMessage(message);
+    setToastVisible(true);
+    toastTimerRef.current = window.setTimeout(() => setToastVisible(false), 4500);
+  };
+
+  // ── Route re-evaluation — every 3 min while trip is active ───────────────
+  useEffect(() => {
+    if (!tripStarted) {
+      if (reEvalIntervalRef.current) { window.clearInterval(reEvalIntervalRef.current); reEvalIntervalRef.current = null; }
+      return;
+    }
+    reEvalIntervalRef.current = window.setInterval(async () => {
+      const { currentPosition: pos, routeData: rd, backendUrl: url } = reEvalDataRef.current;
+      if (!pos || !rd?.destination_label || !url) return;
+      try {
+        const r = await fetch(`${url}/route`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+          body: JSON.stringify({ origin: `${pos.lat},${pos.lng}`, destination: rd.destination_label, mode: "driving" }),
+        });
+        const data = await r.json();
+        if (!r.ok) return;
+        const etaDiff    = (data.eta_minutes ?? 0) - (rd.eta_minutes ?? 0);
+        const riskLevels = ["Low", "Medium", "High"];
+        const riskWorsened = riskLevels.indexOf(data.risk_level) > riskLevels.indexOf(rd.risk_level ?? "Low");
+        if (Math.abs(etaDiff) >= 5 || riskWorsened) {
+          setRouteData((prev) => prev ? { ...prev, ...data } : prev);
+          const msg = riskWorsened
+            ? `Traffic risk increased to ${data.risk_level} — ETA now ${data.eta_minutes} min`
+            : `Route updated — ETA ${etaDiff > 0 ? "+" : ""}${etaDiff} min (${data.eta_minutes} min remaining)`;
+          showToast(msg);
+        }
+      } catch { /* non-fatal */ }
+    }, 180000);
+    return () => { if (reEvalIntervalRef.current) { window.clearInterval(reEvalIntervalRef.current); reEvalIntervalRef.current = null; } };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripStarted]);
+
   // ── AI insight streaming — smooth typewriter ─────────────────────────────
   const fetchAiInsight = async (data: RouteData) => {
     if (aiInsightFetchedRef.current) return;
@@ -401,9 +457,27 @@ export default function Home() {
     setWaypointInputs((prev) => prev.map((w, i) => i === idx ? { ...w, address, coords } : w));
   };
 
+  // ── Route selection ───────────────────────────────────────────────────────
+  const handleSelectAlternative = (index: number) => {
+    const alt = routeData?.routes?.[index];
+    if (!alt) return;
+    setSelectedRouteIndex(index);
+    setRouteData((prev) => prev ? {
+      ...prev,
+      polyline:                 alt.polyline,
+      eta_minutes:              alt.eta_minutes,
+      risk_level:               alt.risk_level,
+      route_summary:            alt.route_summary,
+      distance_km:              alt.distance_km,
+      duration_minutes_base:    alt.duration_minutes_base,
+      duration_minutes_traffic: alt.duration_minutes_traffic,
+    } : prev);
+  };
+
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleGetRoute = async () => {
     setError(""); setRouteData(null); setAiInsight(""); setAiInsightLoading(false);
+    setSelectedRouteIndex(0);
     aiInsightFetchedRef.current = false; // reset guard for new route
     if (!destination.trim()) { setError("Destination is required."); return; }
     if (!currentPosition) {
@@ -426,11 +500,11 @@ export default function Home() {
       const res = await fetch(`${backendUrl}/route`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
-        body: JSON.stringify({ origin: originValue, destination: destValue, mode: "driving", waypoints: waypointValues }),
+        body: JSON.stringify({ origin: originValue, destination: destValue, mode: travelMode, waypoints: waypointValues }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error || "Failed to generate route advisory."); return; }
-      setRouteData(data);
+      setRouteData({ ...data, travel_mode: travelMode });
       setShowAdvisory(true);       // ← Step 2: switch to advisory view
       fetchAiInsight(data);        // non-blocking stream
       saveSearch(destination.trim(), data.destination_label || destination.trim());
@@ -504,7 +578,7 @@ export default function Home() {
         routeData={routeData} loading={loading} tripStarted={tripStarted}
         gyroEnabled={gyroEnabled} recenterRequest={recenterRequest}
         isLoaded={isLoaded} userPos={currentPosition}
-        zoomRequest={zoomRequest}
+        zoomRequest={zoomRequest} selectedRouteIndex={selectedRouteIndex}
       />
       </div>
       <div className="pointer-events-none absolute inset-0 bg-slate-950/10" />
@@ -544,6 +618,7 @@ export default function Home() {
                 onWaypointChange={handleWaypointChange}
                 loading={loading} error={error} isValid={isValid}
                 onGetRoute={handleGetRoute}
+                travelMode={travelMode} onTravelModeChange={setTravelMode}
                 weatherData={weatherData} weatherLoading={weatherLoading} currentPosition={currentPosition}
                 recentSearches={recentSearches}
                 tripHistory={tripHistory} showTripHistory={showTripHistory}
@@ -561,12 +636,15 @@ export default function Home() {
                 gyroEnabled={gyroEnabled} onGyroToggle={() => setGyroEnabled((p) => !p)}
                 onStartTrip={handleStartTrip}
                 onBack={() => setShowAdvisory(false)}
+                selectedRouteIndex={selectedRouteIndex}
+                onSelectAlternative={handleSelectAlternative}
                 onSearchDifferent={() => {
                   setShowAdvisory(false);
                   setRouteData(null);
                   setDestination("");
                   setWaypointInputs([]);
                   setAiInsight("");
+                  setSelectedRouteIndex(0);
                   aiInsightFetchedRef.current = false;
                 }}
               />
@@ -604,6 +682,19 @@ export default function Home() {
           onDashboard={() => { setShowArrival(false); setShowPlanner(true); }}
         />
       )}
+
+      {/* ══ RE-EVALUATION TOAST ══ */}
+      <div style={{
+        position: "fixed", bottom: 90, left: "50%", transform: `translateX(-50%) translateY(${toastVisible ? "0" : "20px"})`,
+        zIndex: 80, maxWidth: 340, width: "calc(100% - 40px)",
+        background: "rgba(15,23,42,0.95)", border: "1px solid rgba(56,189,248,0.3)",
+        borderRadius: 16, padding: "12px 16px",
+        backdropFilter: "blur(20px)", boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+        opacity: toastVisible ? 1 : 0, pointerEvents: "none",
+        transition: "opacity 0.3s ease, transform 0.3s ease",
+      }}>
+        <p style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.5, margin: 0 }}>{toastMessage}</p>
+      </div>
 
       <style>{`
         @keyframes fadeSlideUp { from { opacity:0; transform:translateY(28px); } to { opacity:1; transform:translateY(0); } }

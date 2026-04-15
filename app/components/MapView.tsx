@@ -5,6 +5,7 @@ import {
   GoogleMap,
   Marker,
   Polyline,
+  TrafficLayer,
 } from "@react-google-maps/api";
 
 const containerStyle: React.CSSProperties = {
@@ -23,6 +24,14 @@ type WaypointStop = {
   position?: LatLng;
 };
 
+type AlternativeRoute = {
+  polyline: LatLng[];
+  eta_minutes: number;
+  risk_level: RiskLevel;
+  route_summary: string | null;
+  distance_km: number | null;
+};
+
 type RouteData = {
   polyline?: LatLng[];
   eta_minutes?: number;
@@ -34,6 +43,7 @@ type RouteData = {
   origin_position?: LatLng;
   destination_position?: LatLng;
   waypoints?: WaypointStop[];
+  routes?: AlternativeRoute[];
 };
 
 type MapViewProps = {
@@ -45,6 +55,7 @@ type MapViewProps = {
   isLoaded?: boolean;
   userPos?: LatLng | null;
   zoomRequest?: { delta: number; seq: number };
+  selectedRouteIndex?: number;
 };
 
 const midnightIndigoMapStyle: google.maps.MapTypeStyle[] = [
@@ -106,6 +117,7 @@ export default function MapView({
   isLoaded = false,
   userPos = null,
   zoomRequest,
+  selectedRouteIndex = 0,
 }: MapViewProps) {
   const [heading, setHeading] = useState(0);
   const [mapsReady, setMapsReady] = useState(false);
@@ -334,19 +346,33 @@ export default function MapView({
           />
         )}
 
-        {/* Ghost route (faded) */}
+        {/* Traffic layer */}
+        <TrafficLayer />
+
+        {/* Alternative routes (non-selected) — rendered beneath primary */}
+        {routeData?.routes?.map((alt, i) =>
+          i !== selectedRouteIndex && alt.polyline.length > 0 ? (
+            <Polyline
+              key={`alt-${i}`}
+              path={alt.polyline}
+              options={{ strokeColor: "#475569", strokeOpacity: 0.55, strokeWeight: 5, zIndex: 1 }}
+            />
+          ) : null
+        )}
+
+        {/* Ghost route (faded full primary path) */}
         {routeData?.polyline && routeData.polyline.length > 0 && (
           <Polyline
             path={routeData.polyline}
-            options={{ strokeColor: "#60a5fa", strokeOpacity: 0.2, strokeWeight: 7, zIndex: 1 }}
+            options={{ strokeColor: "#60a5fa", strokeOpacity: 0.2, strokeWeight: 7, zIndex: 2 }}
           />
         )}
 
-        {/* Animated route (solid) */}
+        {/* Animated route (solid, draws in on load) */}
         {animatedPath.length > 1 && (
           <Polyline
             path={animatedPath}
-            options={{ strokeColor: "#38bdf8", strokeOpacity: 1, strokeWeight: 7, zIndex: 2 }}
+            options={{ strokeColor: "#38bdf8", strokeOpacity: 1, strokeWeight: 7, zIndex: 3 }}
           />
         )}
       </GoogleMap>

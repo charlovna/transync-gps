@@ -51,8 +51,9 @@ transync/
         TRANSYNC_HANDOOF.md ← This file
         transync_design_skill.md ← Design reference (fonts, colors, shadows, animations)
       page.tsx              ← Orchestrator only: all state, all useEffects, all handlers
-      layout.tsx            ← PWA meta tags + manifest link
+      layout.tsx            ← PWA meta tags + manifest link + SmoothScroll wrapper
       globals.css           ← Global styles: fonts, btn-gradient, neumorphism classes, HUD handle, animations
+      SmoothScroll.tsx      ← Lenis smooth scroll wrapper — wraps all children in layout.tsx
     public/
       manifest.json         ← PWA manifest
       icons/
@@ -130,7 +131,7 @@ npx kill-port 8000
 
 ### All API endpoints:
 - `GET /` — health check
-- `POST /route` — main route advisory. Takes `{ origin, destination, mode, waypoints? }`. Returns polyline, ETA, risk level, weather-aware advisory text, departure recommendation, steps, origin/destination positions, `distance_km`, and `waypoints[]` positions.
+- `POST /route` — main route advisory. Takes `{ origin, destination, mode, waypoints? }`. Returns backward-compat top-level fields (polyline, eta_minutes, risk_level, advisory_text, recommended_departure_time, steps, origin/destination positions, distance_km, waypoints[]) **plus** a new `routes[]` array of all alternative routes sorted by fastest traffic ETA.
 - `GET /geocode/reverse?lat=&lng=` — reverse geocodes GPS coords via server key. Returns `{ address }`.
 - `GET /weather?lat=&lng=` — fetches current weather from Open-Meteo (no API key needed). Returns `{ temperature, feels_like, weather_code, condition: { label, icon }, precipitation, wind_speed }`.
 - `POST /auth/register` — creates user. Fields: `username`, `email`, `password`. Returns JWT + user.
@@ -275,6 +276,7 @@ type MapViewProps = {
   isLoaded?: boolean;
   userPos?: LatLng | null;
   zoomRequest?: { delta: number; seq: number };
+  selectedRouteIndex?: number;  // which route in routeData.routes[] is primary (default 0)
 };
 ```
 
@@ -659,7 +661,180 @@ const inputWrapStyle = (field): CSSProperties => ({
 
 ---
 
-## 20. PWA MANIFEST
+## 20. LENIS SMOOTH SCROLL
+
+**Package:** `lenis@1.3.21`
+**File:** `app/components/SmoothScroll.tsx`
+
+### Implementation:
+```tsx
+"use client";
+import { useEffect } from "react";
+import Lenis from "lenis";
+
+export default function SmoothScroll({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    const lenis = new Lenis({
+      duration: 1.2,
+      easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
+      smoothWheel: true,
+    });
+    let rafId: number;
+    function raf(time: number) { lenis.raf(time); rafId = requestAnimationFrame(raf); }
+    rafId = requestAnimationFrame(raf);
+    return () => { cancelAnimationFrame(rafId); lenis.destroy(); };
+  }, []);
+  return <>{children}</>;
+}
+```
+
+### Wired in `layout.tsx`:
+```tsx
+import SmoothScroll from "./components/SmoothScroll";
+// ...
+<body ...>
+  <SmoothScroll>{children}</SmoothScroll>
+</body>
+```
+
+### `data-lenis-prevent` — where applied:
+| Container | File | Reason |
+|---|---|---|
+| Map container div (`position: absolute; inset: 0`) | `app/page.tsx` | Google Maps owns all gestures in that region |
+| ProfileSheet root div (`position: fixed`) | `app/components/ProfileSheet.tsx` | Fixed overlay has its own scroll context |
+
+### Critical: Map container must have dimensions
+The map container div must have `position: absolute; inset: 0` (or explicit width/height) **before** adding `data-lenis-prevent`. A zero-size div with the attribute does nothing — Lenis will still intercept touches over the map area.
+
+```tsx
+// CORRECT — covers full screen, Lenis skips it
+<div style={{ position: "absolute", inset: 0 }} data-lenis-prevent>
+  <MapView ... />
+</div>
+
+// WRONG — 0px div, Lenis intercepts map gestures anyway
+<div data-lenis-prevent>
+  <MapView ... />
+</div>
+```
+
+### Do NOT apply Lenis to:
+- `app/login/page.tsx` — has its own crossfade system; Lenis interference causes gesture conflicts
+- `app/components/LoadingScreen.tsx` — CSS-only, no scroll content
+- `app/components/MapView.tsx` — Google Maps manages its own gesture handling
+
+---
+
+## 21. ADAPTIVE ROUTING
+
+Three-part feature: alternative routes display, live traffic layer, and dynamic re-evaluation during trips.
+
+### PART 1 — Alternative Routes
+
+**Backend (`server.js`):**
+- `getDirections()` sets `alternatives: "true"`, returns `data.routes` (full array)
+- `/route` processes every returned route: Distance Matrix used for first candidate only (most accurate), legs aggregated for alternatives
+- Routes sorted ascending by `trafficDurationSec` → primary = `routes[0]`
+- Weather risk bump applied to all routes
+- Response: all existing top-level fields from primary route (backward-compat) + new `routes[]` array
+
+**`routes[]` shape per entry:**
+```ts
+type AlternativeRoute = {
+  polyline: LatLng[];
+  eta_minutes: number;
+  risk_level: RiskLevel;
+  route_summary: string | null;   // Google's short road name e.g. "Ayala Ave"
+  distance_km: number | null;
+  duration_minutes_base: number;
+  duration_minutes_traffic: number;
+};
+```
+
+**`types.ts`:** `AlternativeRoute` exported; `routes?: AlternativeRoute[]` added to `RouteData`.
+
+**`MapView.tsx`:**
+- Non-selected alternatives rendered as slate polylines at zIndex 1 (`strokeColor: "#475569"`, opacity 0.55, weight 5)
+- Primary ghost bumped to zIndex 2; animated route to zIndex 3
+- `selectedRouteIndex` prop (default 0) controls which route is NOT rendered as an alternative
+
+**`AdvisoryPanel.tsx`:**
+- `selectedRouteIndex: number` and `onSelectAlternative: (i: number) => void` props required
+- Horizontal-scroll chip row between ETA tiles and advisory text
+- Only rendered when `routeData.routes.length > 1`
+- Each chip: route_summary (or "Route N+1"), eta_minutes, distance_km, risk dot + label
+- Selected chip: `rgba(56,189,248,0.12)` background, cyan border
+
+**`page.tsx`:**
+```tsx
+const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
+
+const handleSelectAlternative = (index: number) => {
+  const alt = routeData?.routes?.[index];
+  if (!alt) return;
+  setSelectedRouteIndex(index);
+  setRouteData((prev) => prev ? { ...prev,
+    polyline: alt.polyline, eta_minutes: alt.eta_minutes, risk_level: alt.risk_level,
+    route_summary: alt.route_summary, distance_km: alt.distance_km,
+    duration_minutes_base: alt.duration_minutes_base,
+    duration_minutes_traffic: alt.duration_minutes_traffic,
+  } : prev);
+};
+// selectedRouteIndex reset to 0 in handleGetRoute and onSearchDifferent
+```
+
+---
+
+### PART 2 — Traffic Layer
+
+`<TrafficLayer />` imported from `@react-google-maps/api` and rendered directly inside `<GoogleMap>` in `MapView.tsx`. No props needed — Google renders the live traffic overlay automatically on the map tiles.
+
+---
+
+### PART 3 — Dynamic Re-evaluation
+
+Every 3 minutes while a trip is active, the route is re-fetched from current position. If ETA changes ≥5 min or risk worsens, `routeData` is updated and a slide-up toast fires.
+
+**Stale-closure pattern (critical for intervals):**
+```tsx
+// Always-fresh ref — updated on every render (no re-render cost)
+const reEvalDataRef = useRef({ currentPosition, routeData, backendUrl });
+useEffect(() => {
+  reEvalDataRef.current = { currentPosition, routeData, backendUrl };
+});
+
+// Interval only restarts when tripStarted changes
+useEffect(() => {
+  if (!tripStarted) { clearInterval(reEvalIntervalRef.current); return; }
+  reEvalIntervalRef.current = window.setInterval(async () => {
+    const { currentPosition: pos, routeData: rd, backendUrl: url } = reEvalDataRef.current;
+    // ... fetch /route, compare, setRouteData, showToast ...
+  }, 180000); // 3 minutes
+  return () => clearInterval(reEvalIntervalRef.current);
+}, [tripStarted]);
+```
+
+**Toast component (inline in page.tsx):**
+```tsx
+<div style={{
+  position: "fixed", bottom: 90, left: "50%",
+  transform: `translateX(-50%) translateY(${toastVisible ? "0" : "20px"})`,
+  opacity: toastVisible ? 1 : 0, pointerEvents: "none",
+  transition: "opacity 0.3s ease, transform 0.3s ease",
+  // dark glass panel, zIndex: 80
+}}>
+  <p>{toastMessage}</p>
+</div>
+```
+Toast auto-hides after 4.5s via `toastTimerRef`. Previous timer is cleared on each new toast call.
+
+**Significance thresholds:**
+- ETA change ≥ 5 minutes (absolute)
+- Risk level worsens: Low→Medium, Low→High, or Medium→High
+
+---
+
+## 22. PWA MANIFEST
 
 - `public/manifest.json` — name, theme/bg `#020617`, display `standalone`
 - `layout.tsx` — `<meta name="theme-color">`, manifest link, apple-web-app meta
@@ -667,7 +842,7 @@ const inputWrapStyle = (field): CSSProperties => ({
 
 ---
 
-## 21. KNOWN ISSUES FIXED
+## 23. KNOWN ISSUES FIXED
 
 | Issue | Fix Applied |
 |---|---|
@@ -692,12 +867,17 @@ const inputWrapStyle = (field): CSSProperties => ({
 | FABs overlap HUD when advisory text present | `ResizeObserver` on HUD ref drives `fabBottom` dynamically |
 | Map not zoomable with buttons | Zoom FABs added; `zoomRequest` prop fires `map.setZoom()` in MapView |
 | Pinch-zoom broken on mobile | `gestureHandling: "greedy"` + `scrollwheel: true` — both confirmed active |
+| Lenis intercepts map pan/pinch on mobile | Map container given `position: absolute; inset: 0` + `data-lenis-prevent`; zero-size div would not block Lenis |
+| ProfileSheet scroll conflicts with Lenis | `data-lenis-prevent` on root fixed div — Lenis skips fixed overlay |
 | Form inputs not keyboard accessible | `id`/`htmlFor` linked, `aria-label` on icon buttons, `role="alert"` on errors |
 | Logo box animating width/height (layout) | Replaced with `transform: scale()` — compositor-only |
+| Only one route returned from backend | `alternatives: "true"` in `getDirections()`, returns `data.routes` array, `/route` sorts and returns `routes[]` |
+| No live traffic overlay on map | `<TrafficLayer />` added inside GoogleMap in MapView.tsx |
+| ETA never updates from real traffic during trip | 3-min re-evaluation interval: re-fetches `/route` from current position, updates routeData if significant change, fires toast |
 
 ---
 
-## 22. DEPLOYMENT — NEXT STEPS (planned)
+## 24. DEPLOYMENT — NEXT STEPS (planned)
 
 **Frontend → Vercel**
 - Push `transync-gps` to GitHub
@@ -731,7 +911,7 @@ const inputWrapStyle = (field): CSSProperties => ({
 
 ---
 
-## 23. WHAT IS NOT YET BUILT
+## 25. WHAT IS NOT YET BUILT
 
 - PWA PNG icons (192×192, 512×512) — needed for iOS install prompt
 - Distinct ETAs for private vs public transport (jeepney mode)
@@ -742,20 +922,21 @@ const inputWrapStyle = (field): CSSProperties => ({
 - PWA service worker / offline support
 - Arrival feedback persistence (currently local state only — not saved to backend)
 - Manual starting point override for desktop testing
+- Re-evaluation toast does not update alternative route chips (only top-level routeData updates)
 - Light mode (deliberately deferred — inline styles throughout require CSS variable refactor)
 
 ---
 
-## 24. THESIS / RESEARCH FRAMING
+## 26. THESIS / RESEARCH FRAMING
 
 - **Problem:** Existing navigation tools don't provide separate ETAs for private vs public vehicles, no localized delay formulas for Lipa City conditions, no unified commuter advisory platform
 - **Solution framing:** Hybrid navigation architecture — deterministic geospatial APIs (Google Maps) + AI-driven interpretive advisory layer (Claude) + real-time weather integration
 - **Geographic context:** Lipa City, Batangas; students and daily commuters; De La Salle Lipa area
-- **Key differentiators over standard Google Maps:** traffic + weather synthesis, AI-generated commuter advisories, dynamic ETA updates, multi-stop routing, transport-mode-specific ETAs (planned)
+- **Key differentiators over standard Google Maps:** traffic + weather synthesis, AI-generated commuter advisories, dynamic ETA updates, multi-stop routing, alternative route comparison chips, live traffic layer overlay, adaptive route re-evaluation every 3 minutes during trips, transport-mode-specific ETAs (planned)
 
 ---
 
-## 25. CODING PREFERENCES
+## 27. CODING PREFERENCES
 
 - **Always provide full updated files** — never partial snippets that require manual merging
 - **Mobile-first** — all UI decisions default to mobile viewport
@@ -768,6 +949,7 @@ const inputWrapStyle = (field): CSSProperties => ({
 - **aiInsightFetchedRef pattern** — use a ref guard identical to `weatherFetchedRef` whenever preventing double-invoke in StrictMode
 - **WaypointRow pattern** — each repeating input with its own Autocomplete uses a self-contained sub-component with its own `useEffect` and `useRef`
 - **ResizeObserver pattern** — use ResizeObserver (not hardcoded px) whenever a fixed element's position depends on another element's dynamic height
+- **data-lenis-prevent pattern** — any container that owns its own gesture/scroll handling (Google Maps, fixed overlays) must have `data-lenis-prevent` AND explicit dimensions (`position: absolute; inset: 0` or explicit width/height). A zero-size div with the attribute will not block Lenis.
 
 ---
 

@@ -7,6 +7,16 @@ export type WaypointStop = {
   position?: LatLng;
 };
 
+export type AlternativeRoute = {
+  polyline: LatLng[];
+  eta_minutes: number;
+  risk_level: RiskLevel;
+  route_summary: string | null;
+  distance_km: number | null;
+  duration_minutes_base: number;
+  duration_minutes_traffic: number;
+};
+
 export type RouteData = {
   polyline?: LatLng[];
   eta_minutes?: number;
@@ -18,7 +28,9 @@ export type RouteData = {
   origin_position?: LatLng;
   destination_position?: LatLng;
   distance_km?: number | null;
+  travel_mode?: "driving" | "bicycling" | "walking";
   waypoints?: WaypointStop[];
+  routes?: AlternativeRoute[];
 };
 
 export type WeatherData = {

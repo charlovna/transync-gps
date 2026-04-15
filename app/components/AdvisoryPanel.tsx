@@ -2,6 +2,54 @@
 
 import type { RouteData, RiskBadge } from "../lib/types";
 
+const RISK_CHIP: Record<string, string> = {
+  Low:    "#10b981",
+  Medium: "#f59e0b",
+  High:   "#ef4444",
+};
+
+const MODE_LABEL: Record<string, string> = {
+  driving:   "4 Wheels",
+  bicycling: "2 Wheels",
+  walking:   "Walking",
+};
+
+function ModeIcon({ mode }: { mode?: string }) {
+  if (mode === "bicycling") return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="5.5" cy="15.5" r="3.5"/><circle cx="18.5" cy="15.5" r="3.5"/>
+      <path d="M15 6h-5l-1.5 5.5M15 6l3.5 9.5M9.5 11.5l5 .5"/><circle cx="15" cy="6" r="1"/>
+    </svg>
+  );
+  if (mode === "walking") return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="4" r="1.5"/>
+      <path d="M9 8.5l-2 6M15 8.5l2 6M10 8.5h4l1 3.5-3 2 1 4M9 8.5l-1 4 3 1.5"/>
+    </svg>
+  );
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M5 11l1.5-4.5h11L19 11M17 16a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm-7 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM3 11.5V17h1v1.5A.5.5 0 0 0 4.5 19h1a.5.5 0 0 0 .5-.5V17h11v1.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5V17h1v-5.5L19 11H5l-2 .5z"/>
+    </svg>
+  );
+}
+
+function etaColor(level?: string): string {
+  if (level === "High")   return "#f87171";
+  if (level === "Medium") return "#fbbf24";
+  return "#34d399";
+}
+function etaGlow(level?: string): string {
+  if (level === "High")   return "0 0 20px rgba(248,113,113,0.4)";
+  if (level === "Medium") return "0 0 20px rgba(251,191,36,0.35)";
+  return "0 0 20px rgba(52,211,153,0.4)";
+}
+function etaBorder(level?: string): string {
+  if (level === "High")   return "1px solid rgba(248,113,113,0.25)";
+  if (level === "Medium") return "1px solid rgba(251,191,36,0.25)";
+  return "1px solid rgba(52,211,153,0.2)";
+}
+
 type Props = {
   routeData: RouteData;
   destination: string;
@@ -13,6 +61,8 @@ type Props = {
   onStartTrip: () => void;
   onBack: () => void;
   onSearchDifferent: () => void;
+  selectedRouteIndex: number;
+  onSelectAlternative: (index: number) => void;
 };
 
 export default function AdvisoryPanel({
@@ -20,6 +70,7 @@ export default function AdvisoryPanel({
   aiInsight, aiInsightLoading,
   gyroEnabled, onGyroToggle,
   onStartTrip, onBack, onSearchDifferent,
+  selectedRouteIndex, onSelectAlternative,
 }: Props) {
   return (
     <div className="w-full max-w-[520px] mx-auto space-y-4">
@@ -33,7 +84,12 @@ export default function AdvisoryPanel({
           </svg>
         </button>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.14em" }}>Route Advisory</p>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 99, fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.25)", color: "#38bdf8" }}>
+              <ModeIcon mode={routeData.travel_mode} />
+              {MODE_LABEL[routeData.travel_mode ?? "driving"] ?? "4 Wheels"}
+            </span>
+          </div>
           <p className="font-orbitron" style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {routeData.destination_label || destination}
           </p>
@@ -62,11 +118,11 @@ export default function AdvisoryPanel({
 
       {/* ── ETA + Depart tiles ── */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <div className="neu-extruded" style={{ borderRadius: 20, padding: "16px", border: "1px solid rgba(56,189,248,0.15)", background: "rgba(2,6,23,0.92)", backdropFilter: "blur(20px)" }}>
+        <div className="neu-extruded" style={{ borderRadius: 20, padding: "16px", border: etaBorder(routeData.risk_level), background: "rgba(2,6,23,0.92)", backdropFilter: "blur(20px)" }}>
           <p style={{ fontSize: 10, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.13em" }}>ETA</p>
-          <p className="font-orbitron" style={{ fontSize: 36, fontWeight: 800, color: "#38bdf8", lineHeight: 1.1, marginTop: 4, textShadow: "0 0 20px rgba(56,189,248,0.4)" }}>
+          <p className="font-orbitron" style={{ fontSize: 36, fontWeight: 800, color: etaColor(routeData.risk_level), lineHeight: 1.1, marginTop: 4, textShadow: etaGlow(routeData.risk_level) }}>
             {routeData.eta_minutes}
-            <span style={{ fontSize: 13, fontWeight: 500, color: "#7dd3fc", marginLeft: 3 }}>min</span>
+            <span style={{ fontSize: 13, fontWeight: 500, color: etaColor(routeData.risk_level), opacity: 0.7, marginLeft: 3 }}>min</span>
           </p>
         </div>
         <div className="neu-extruded" style={{ borderRadius: 20, padding: "16px", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.92)", backdropFilter: "blur(20px)" }}>
@@ -76,6 +132,50 @@ export default function AdvisoryPanel({
           </p>
         </div>
       </div>
+
+      {/* ── Alternative Routes ── */}
+      {routeData.routes && routeData.routes.length > 1 && (
+        <div style={{ borderRadius: 20, padding: "14px 16px", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.92)", backdropFilter: "blur(20px)" }}>
+          <p style={{ fontSize: 10, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 10 }}>Alternative Routes</p>
+          <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, scrollbarWidth: "none" }}>
+            {routeData.routes.map((alt, i) => {
+              const selected = i === selectedRouteIndex;
+              return (
+                <button
+                  key={i}
+                  onClick={() => onSelectAlternative(i)}
+                  style={{
+                    flexShrink: 0,
+                    borderRadius: 14,
+                    padding: "10px 14px",
+                    border: selected ? "1px solid rgba(56,189,248,0.6)" : "1px solid rgba(255,255,255,0.1)",
+                    background: selected ? "rgba(56,189,248,0.12)" : "rgba(255,255,255,0.04)",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    minWidth: 120,
+                    boxShadow: selected ? "0 0 12px rgba(56,189,248,0.15)" : "none",
+                    transition: "border-color 0.15s, background 0.15s",
+                  }}
+                >
+                  <p style={{ fontSize: 11, fontWeight: 700, color: selected ? "#38bdf8" : "#94a3b8", marginBottom: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140 }}>
+                    {alt.route_summary || `Route ${i + 1}`}
+                  </p>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: selected ? "#e2e8f0" : "#64748b" }}>
+                    {alt.eta_minutes} min
+                  </p>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
+                    {alt.distance_km != null && (
+                      <p style={{ fontSize: 11, color: "#475569" }}>{alt.distance_km} km</p>
+                    )}
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: RISK_CHIP[alt.risk_level] ?? "#64748b", flexShrink: 0 }} />
+                    <p style={{ fontSize: 11, color: RISK_CHIP[alt.risk_level] ?? "#64748b" }}>{alt.risk_level}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Advisory text ── */}
       {routeData.advisory_text && (

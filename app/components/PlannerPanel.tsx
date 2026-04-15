@@ -121,6 +121,8 @@ type Props = {
   error: string;
   isValid: boolean;
   onGetRoute: () => void;
+  travelMode: "driving" | "bicycling" | "walking";
+  onTravelModeChange: (mode: "driving" | "bicycling" | "walking") => void;
   weatherData: WeatherData | null;
   weatherLoading: boolean;
   currentPosition: LatLng | null;
@@ -139,6 +141,7 @@ export default function PlannerPanel({
   destination, onDestinationChange, onDestinationCoordsChange,
   waypointInputs, onWaypointAdd, onWaypointRemove, onWaypointChange,
   loading, error, isValid, onGetRoute,
+  travelMode, onTravelModeChange,
   weatherData, weatherLoading, currentPosition,
   recentSearches, tripHistory, showTripHistory, onToggleTripHistory,
   onQuickDestination, isLoaded, authChecked,
@@ -203,6 +206,67 @@ export default function PlannerPanel({
 
       {/* ── Route input ── */}
       <div style={{ borderRadius: 26, padding: "20px", border: "1px solid rgba(255,255,255,0.09)", background: "rgba(2,6,23,0.92)", backdropFilter: "blur(20px)", boxShadow: "0 20px 40px rgba(0,0,0,0.4)" }}>
+        {/* ── Transport mode selector ── */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+          {([
+            {
+              key: "driving" as const,
+              label: "4 Wheels",
+              icon: (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M5 11l1.5-4.5h11L19 11M17 16a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm-7 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM3 11.5V17h1v1.5A.5.5 0 0 0 4.5 19h1a.5.5 0 0 0 .5-.5V17h11v1.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5V17h1v-5.5L19 11H5l-2 .5z"/>
+                </svg>
+              ),
+            },
+            {
+              key: "bicycling" as const,
+              label: "2 Wheels",
+              icon: (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="5.5" cy="15.5" r="3.5"/>
+                  <circle cx="18.5" cy="15.5" r="3.5"/>
+                  <path d="M15 6h-5l-1.5 5.5M15 6l3.5 9.5M9.5 11.5l5 .5"/>
+                  <circle cx="15" cy="6" r="1"/>
+                </svg>
+              ),
+            },
+            {
+              key: "walking" as const,
+              label: "Walk",
+              icon: (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="4" r="1.5"/>
+                  <path d="M9 8.5l-2 6M15 8.5l2 6M10 8.5h4l1 3.5-3 2 1 4M9 8.5l-1 4 3 1.5"/>
+                </svg>
+              ),
+            },
+          ] as const).map(({ key, label, icon }) => {
+            const active = travelMode === key;
+            return (
+              <button
+                key={key}
+                onClick={() => onTravelModeChange(key)}
+                className="btn-tap"
+                style={{
+                  flex: 1,
+                  display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+                  padding: "10px 6px",
+                  borderRadius: 16,
+                  border: active ? "1px solid rgba(56,189,248,0.6)" : "1px solid rgba(255,255,255,0.08)",
+                  background: active ? "rgba(56,189,248,0.1)" : "rgba(255,255,255,0.03)",
+                  color: active ? "#38bdf8" : "#64748b",
+                  cursor: "pointer",
+                  boxShadow: active ? "0 0 12px rgba(56,189,248,0.15)" : "none",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                {icon}
+                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+
         <div style={{ display: "flex", gap: 14 }}>
 
           {/* Left connector rail */}
@@ -307,7 +371,7 @@ export default function PlannerPanel({
           disabled={loading || !isValid || gpsLoading}
           className="btn-gradient"
           style={{ width: "100%", marginTop: 18, borderRadius: 18, padding: "16px", fontSize: 16, boxShadow: "0 8px 24px rgba(6,182,212,0.3)" }}>
-          {loading ? "Generating Route Info..." : gpsLoading ? "Waiting for GPS..." : "Get Route Info  →"}
+          {loading ? "Generating Route Info..." : gpsLoading ? "Waiting for GPS..." : `Get Route Info  →`}
         </button>
         {error && (
           <div style={{ marginTop: 12, borderRadius: 14, padding: "10px 14px", border: "1px solid rgba(239,68,68,0.3)", background: "rgba(127,29,29,0.4)", fontSize: 13, color: "#fca5a5" }}>

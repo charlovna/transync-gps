@@ -8,6 +8,22 @@ const SAFE_BOTTOM = "env(safe-area-inset-bottom, 0px)";
 // Gap between FABs and top of HUD panel
 const FAB_GAP = 12;
 
+function etaColor(level?: string): string {
+  if (level === "High")   return "#f87171";
+  if (level === "Medium") return "#fbbf24";
+  return "#34d399";
+}
+function etaGlow(level?: string): string {
+  if (level === "High")   return "0 0 16px rgba(248,113,113,0.4)";
+  if (level === "Medium") return "0 0 16px rgba(251,191,36,0.35)";
+  return "0 0 16px rgba(52,211,153,0.4)";
+}
+function etaBorder(level?: string): string {
+  if (level === "High")   return "1px solid rgba(248,113,113,0.2)";
+  if (level === "Medium") return "1px solid rgba(251,191,36,0.2)";
+  return "1px solid rgba(52,211,153,0.18)";
+}
+
 type Props = {
   routeData: RouteData | null;
   destination: string;
@@ -123,11 +139,11 @@ export default function NavigationHUD({
               </span>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
-              <div className="neu-extruded" style={{ borderRadius: 16, padding: "12px 14px", border: "1px solid rgba(56,189,248,0.12)", background: "rgba(15,23,42,0.8)" }}>
+              <div className="neu-extruded" style={{ borderRadius: 16, padding: "12px 14px", border: etaBorder(routeData?.risk_level), background: "rgba(15,23,42,0.8)" }}>
                 <p style={{ fontSize: 10, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.13em" }}>ETA</p>
-                <p className="font-orbitron" style={{ fontSize: 28, fontWeight: 800, color: "#38bdf8", lineHeight: 1.1, marginTop: 2, textShadow: "0 0 16px rgba(56,189,248,0.35)" }}>
+                <p className="font-orbitron" style={{ fontSize: 28, fontWeight: 800, color: etaColor(routeData?.risk_level), lineHeight: 1.1, marginTop: 2, textShadow: etaGlow(routeData?.risk_level) }}>
                   {routeData?.eta_minutes ?? "—"}
-                  <span style={{ fontSize: 13, fontWeight: 500, color: "#7dd3fc", marginLeft: 3 }}>min</span>
+                  <span style={{ fontSize: 13, fontWeight: 500, color: etaColor(routeData?.risk_level), opacity: 0.7, marginLeft: 3 }}>min</span>
                 </p>
               </div>
               <div className="neu-extruded" style={{ borderRadius: 16, padding: "12px 14px", border: "1px solid rgba(255,255,255,0.07)", background: "rgba(15,23,42,0.8)" }}>
@@ -154,7 +170,7 @@ export default function NavigationHUD({
               <p style={{ fontSize: 15, fontWeight: 700, color: "#f8fafc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {routeData?.destination_label || destination}
               </p>
-              <p className="font-orbitron" style={{ fontSize: 13, color: "#38bdf8", marginTop: 2 }}>
+              <p className="font-orbitron" style={{ fontSize: 13, color: etaColor(routeData?.risk_level), marginTop: 2 }}>
                 {routeData?.eta_minutes ?? "—"} <span style={{ fontSize: 11, fontWeight: 400 }}>min</span>
                 <span style={{ color: "#475569", marginLeft: 8, fontFamily: "'DM Sans', sans-serif", fontWeight: 400 }}>· {routeData?.risk_level || "—"} traffic</span>
               </p>
