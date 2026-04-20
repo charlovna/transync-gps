@@ -1,5 +1,4 @@
 # TRANSYNC DESIGN SKILL
-*Reference this in Claude Code sessions when working on any UI component.*
 *Companion to TRANSYNC_HANDOFF.md — design-specific context only.*
 
 ---

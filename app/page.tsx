@@ -239,6 +239,8 @@ export default function Home() {
     }
     const watchId = navigator.geolocation.watchPosition(
       async (pos) => {
+        // Reject network/IP-based coarse fixes — hardware GPS accuracy is typically <20m
+        if (pos.coords.accuracy > 100) return;
         const coords: LatLng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setCurrentPosition(coords); setGpsLoading(false); setGpsError("");
         const coordString = `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`;
@@ -259,7 +261,7 @@ export default function Home() {
         setGpsLoading(false); setGpsError(message);
         setLocationAddress("Current location unavailable"); setLocationCoords("");
       },
-      { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
     );
     return () => navigator.geolocation.clearWatch(watchId);
   // eslint-disable-next-line react-hooks/exhaustive-deps

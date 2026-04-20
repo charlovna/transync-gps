@@ -7,6 +7,7 @@ import {
   Polyline,
   TrafficLayer,
 } from "@react-google-maps/api";
+import gsap from "gsap";
 
 const containerStyle: React.CSSProperties = {
   width: "100%",
@@ -123,12 +124,16 @@ export default function MapView({
   const [mapsReady, setMapsReady] = useState(false);
   const [animatedPath, setAnimatedPath] = useState<LatLng[]>([]);
 
-  const mapRef = useRef<google.maps.Map | null>(null);
-  const animationRef = useRef<number | null>(null);
+  const mapRef               = useRef<google.maps.Map | null>(null);
+  const mapContainerRef      = useRef<HTMLDivElement>(null);
+  const loadingOverlayRef    = useRef<HTMLDivElement>(null);
+  const animationRef         = useRef<number | null>(null);
   const routeCameraTimeoutRef = useRef<number[]>([]);
-  const previousUserPosRef = useRef<LatLng | null>(null);
-  // Track last pan time to avoid over-panning on every tiny GPS tick
-  const lastNavPanRef = useRef<number>(0);
+  const previousUserPosRef   = useRef<LatLng | null>(null);
+  const lastNavPanRef        = useRef<number>(0);
+  // GSAP tween refs — killed before starting a new one to prevent conflicts
+  const cameraPanTweenRef    = useRef<gsap.core.Tween | null>(null);
+  const zoomTweenRef         = useRef<gsap.core.Tween | null>(null);
 
   // ── Heading — computed from incoming userPos prop ─────────────────────────
   useEffect(() => {
@@ -201,20 +206,44 @@ export default function MapView({
     return () => { routeCameraTimeoutRef.current.forEach((id) => window.clearTimeout(id)); };
   }, [routeData?.polyline, routeData?.origin_position, routeData?.destination_position, tripStarted, mapsReady]);
 
-  // ── Camera: navigation follow (Waze/Google Maps style) ───────────────────
+  // ── Camera: navigation follow — GSAP smooth interpolated pan ─────────────
   useEffect(() => {
     if (!mapRef.current || !tripStarted || !userPos || !mapsReady) return;
 
     const now = Date.now();
-    // Throttle pans to max once every 800ms for smoothness
     if (now - lastNavPanRef.current < 800) return;
     lastNavPanRef.current = now;
 
     const map = mapRef.current;
-    map.panTo(userPos);
 
+    // Kill any in-flight pan and smoothly interpolate to new GPS position
+    if (cameraPanTweenRef.current) cameraPanTweenRef.current.kill();
+    const center = map.getCenter();
+    if (center) {
+      const pos = { lat: center.lat(), lng: center.lng() };
+      cameraPanTweenRef.current = gsap.to(pos, {
+        lat: userPos.lat,
+        lng: userPos.lng,
+        duration: 0.85,
+        ease: "power2.out",
+        onUpdate: () => map.setCenter({ lat: pos.lat, lng: pos.lng }),
+      }) as gsap.core.Tween;
+    } else {
+      map.panTo(userPos);
+    }
+
+    // Smooth zoom up to navigation level
     const currentZoom = map.getZoom() ?? 15;
-    if (currentZoom < 17) map.setZoom(17);
+    if (currentZoom < 17) {
+      if (zoomTweenRef.current) zoomTweenRef.current.kill();
+      const zObj = { z: currentZoom };
+      zoomTweenRef.current = gsap.to(zObj, {
+        z: 17,
+        duration: 0.5,
+        ease: "power2.out",
+        onUpdate: () => map.setZoom(zObj.z),
+      }) as gsap.core.Tween;
+    }
 
     if (gyroEnabled) {
       map.setHeading(heading);
@@ -225,24 +254,39 @@ export default function MapView({
     }
   }, [tripStarted, userPos, gyroEnabled, heading, mapsReady]);
 
-  // ── Zoom in / out requests ───────────────────────────────────────────────
-  useEffect(() => {
-    if (!mapRef.current || !mapsReady || !zoomRequest) return;
-    const map = mapRef.current;
-    const current = map.getZoom() ?? 15;
-    map.setZoom(Math.min(21, Math.max(3, current + zoomRequest.delta)));
-  }, [zoomRequest, mapsReady]);
-
-  // ── Camera: recenter button ──────────────────────────────────────────────
+  // ── Camera: recenter button — GSAP smooth pan ────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !userPos || recenterRequest === 0 || !mapsReady) return;
 
     const map = mapRef.current;
-    map.panTo(userPos);
 
-    const zoom = tripStarted ? 17 : 16;
-    const current = map.getZoom() ?? 15;
-    if (current < zoom) map.setZoom(zoom);
+    if (cameraPanTweenRef.current) cameraPanTweenRef.current.kill();
+    const center = map.getCenter();
+    if (center) {
+      const pos = { lat: center.lat(), lng: center.lng() };
+      cameraPanTweenRef.current = gsap.to(pos, {
+        lat: userPos.lat,
+        lng: userPos.lng,
+        duration: 0.6,
+        ease: "power3.out",
+        onUpdate: () => map.setCenter({ lat: pos.lat, lng: pos.lng }),
+      }) as gsap.core.Tween;
+    } else {
+      map.panTo(userPos);
+    }
+
+    const targetZoom = tripStarted ? 17 : 16;
+    const currentZoom = map.getZoom() ?? 15;
+    if (currentZoom < targetZoom) {
+      if (zoomTweenRef.current) zoomTweenRef.current.kill();
+      const zObj = { z: currentZoom };
+      zoomTweenRef.current = gsap.to(zObj, {
+        z: targetZoom,
+        duration: 0.5,
+        ease: "power2.out",
+        onUpdate: () => map.setZoom(zObj.z),
+      }) as gsap.core.Tween;
+    }
 
     if (tripStarted && gyroEnabled) {
       map.setHeading(heading);
@@ -252,6 +296,60 @@ export default function MapView({
       map.setTilt(0);
     }
   }, [recenterRequest, userPos, tripStarted, gyroEnabled, heading, mapsReady]);
+
+  // ── Zoom in / out requests — GSAP smooth zoom ───────────────────────────
+  useEffect(() => {
+    if (!mapRef.current || !mapsReady || !zoomRequest) return;
+    const map = mapRef.current;
+    const currentZoom = map.getZoom() ?? 15;
+    const targetZoom = Math.min(21, Math.max(3, currentZoom + zoomRequest.delta));
+
+    if (zoomTweenRef.current) zoomTweenRef.current.kill();
+    const zObj = { z: currentZoom };
+    zoomTweenRef.current = gsap.to(zObj, {
+      z: targetZoom,
+      duration: 0.35,
+      ease: "power2.out",
+      onUpdate: () => map.setZoom(zObj.z),
+    }) as gsap.core.Tween;
+  }, [zoomRequest, mapsReady]);
+
+  // ── Loading overlay: GSAP fade in/out ────────────────────────────────────
+  useEffect(() => {
+    const el = loadingOverlayRef.current;
+    if (!el) return;
+    if (loading) {
+      gsap.fromTo(el,
+        { opacity: 0, y: 12, pointerEvents: "none" },
+        { opacity: 1, y: 0, duration: 0.3, ease: "power2.out",
+          onStart: () => { el.style.pointerEvents = "auto"; } }
+      );
+    } else {
+      gsap.to(el, {
+        opacity: 0, y: -8, duration: 0.25, ease: "power2.in",
+        onComplete: () => { el.style.pointerEvents = "none"; },
+      });
+    }
+  }, [loading]);
+
+  // ── Map container fade-in when Maps JS API first loads ───────────────────
+  useEffect(() => {
+    if (isLoaded && mapContainerRef.current) {
+      gsap.fromTo(mapContainerRef.current,
+        { opacity: 0 },
+        { opacity: 1, duration: 0.5, ease: "power1.out" }
+      );
+    }
+  }, [isLoaded]);
+
+  // ── Cleanup all GSAP tweens on unmount ───────────────────────────────────
+  useEffect(() => {
+    return () => {
+      cameraPanTweenRef.current?.kill();
+      zoomTweenRef.current?.kill();
+      if (animationRef.current) window.clearInterval(animationRef.current);
+    };
+  }, []);
 
   const handleMapLoad = (map: google.maps.Map) => {
     mapRef.current = map;
@@ -285,8 +383,7 @@ export default function MapView({
       : undefined;
 
   return (
-    // Height is 100dvh so map fills screen on mobile (accounts for browser chrome)
-    <div style={{ position: "absolute", inset: 0 }}>
+    <div ref={mapContainerRef} style={{ position: "absolute", inset: 0, willChange: "opacity" }}>
       <GoogleMap
         mapContainerStyle={containerStyle}
         center={mapCenter}
@@ -299,9 +396,9 @@ export default function MapView({
           fullscreenControl: false,
           mapTypeControl: false,
           clickableIcons: false,
-          zoomControl: false,         // using custom FABs below
-          scrollwheel: true,          // desktop scroll-to-zoom
-          gestureHandling: "greedy",  // single-finger pan + pinch-zoom on mobile
+          zoomControl: false,
+          scrollwheel: true,
+          gestureHandling: "greedy",
           disableDefaultUI: true,
           minZoom: 3,
           maxZoom: 21,
@@ -377,17 +474,20 @@ export default function MapView({
         )}
       </GoogleMap>
 
-      {/* Loading overlay */}
-      {loading && (
-        <div style={{
+      {/* Loading overlay — always in DOM, GSAP drives opacity/position */}
+      <div
+        ref={loadingOverlayRef}
+        style={{
           position: "absolute", inset: 0, zIndex: 15,
           display: "flex", alignItems: "center", justifyContent: "center",
           background: "rgba(2,6,23,0.28)", backdropFilter: "blur(2px)",
           color: "#e2e8f0", fontFamily: "inherit", fontSize: 16, fontWeight: 600,
-        }}>
-          Generating predictive advisory...
-        </div>
-      )}
+          opacity: 0, pointerEvents: "none",
+          willChange: "transform, opacity",
+        }}
+      >
+        Generating predictive advisory...
+      </div>
     </div>
   );
 }
