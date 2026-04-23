@@ -65,17 +65,21 @@ export default function EventsCarousel({ events, nearest, onEventSelect }: Props
   const fgRefs   = useRef<(HTMLDivElement | null)[]>([]);
   const scopeRef = useRef<HTMLDivElement>(null);
 
-  // ── Long-press preview state ───────────────────────────────────────────
-  // Short-tap populates destination (existing behavior). Long-press opens a
-  // modal preview with full details. Kept in a single state so AnimatePresence
-  // logic is trivial.
-  const [previewEvent, setPreviewEvent] = useState<LocalEvent | null>(null);
+  // ── MOBILE-FIRST UX — Long-press TOGGLES in-place detail breakdown ─────
+  // Old (removed): long-press → floating modal overlay with X button. On
+  // Samsung S23+ / iPhone 14+ the X button was being overlapped by the event
+  // pill at the top of the sheet — cramped header, bad thumb reach.
+  // New: long-press expands the SAME carousel region into a detailed
+  // breakdown in place. Long-press again returns to the scroll. No floating
+  // X to overlap anything, close affordance is large and thumb-reachable,
+  // and the gesture is symmetric (hold to open, hold to close).
+  const [expandedEvent, setExpandedEvent] = useState<LocalEvent | null>(null);
   const [pressedId, setPressedId] = useState<string | null>(null); // visual feedback
-  const pressTimer = useRef<number | null>(null);
-  const pressFired = useRef(false);
-  const pressStart = useRef<{ x: number; y: number } | null>(null);
-  const previewBackdropRef = useRef<HTMLDivElement>(null);
-  const previewSheetRef    = useRef<HTMLDivElement>(null);
+  const pressTimer  = useRef<number | null>(null);
+  const pressFired  = useRef(false);
+  const pressStart  = useRef<{ x: number; y: number } | null>(null);
+  const carouselLayerRef = useRef<HTMLDivElement>(null);
+  const detailPanelRef   = useRef<HTMLDivElement>(null);
 
   const cancelPress = () => {
     if (pressTimer.current !== null) {
@@ -85,18 +89,49 @@ export default function EventsCarousel({ events, nearest, onEventSelect }: Props
     setPressedId(null);
   };
 
-  const handlePointerDown = (e: React.PointerEvent, ev: LocalEvent) => {
+  const closeExpanded = () => {
+    // Explicit close runs the reverse GSAP animation, then clears the state
+    // so the detail panel unmounts after its exit finishes. If the ref is
+    // gone, fall back to instant clear.
+    if (!detailPanelRef.current || !carouselLayerRef.current) {
+      setExpandedEvent(null);
+      return;
+    }
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const tl = gsap.timeline({ onComplete: () => setExpandedEvent(null) });
+    if (reduce) {
+      tl.to(detailPanelRef.current, { opacity: 0, duration: 0.2 }, 0);
+      tl.to(carouselLayerRef.current, { opacity: 1, duration: 0.2 }, 0);
+    } else {
+      tl.to(detailPanelRef.current, {
+        opacity: 0, y: 10, scale: 0.98, filter: "blur(8px)",
+        duration: 0.28, ease: "expo.in",
+      }, 0);
+      tl.to(carouselLayerRef.current, {
+        opacity: 1, scale: 1, filter: "blur(0px)",
+        duration: 0.45, ease: "expo.out",
+      }, 0.08);
+    }
+  };
+
+  // Pointer handlers — shared between cards and the detail panel so the
+  // gesture is the same in both directions.
+  const handlePointerDown = (e: React.PointerEvent, ev: LocalEvent, key: string) => {
     pressFired.current = false;
     pressStart.current = { x: e.clientX, y: e.clientY };
-    setPressedId(ev.id + "-" + e.currentTarget.getAttribute("data-index"));
+    setPressedId(key);
     pressTimer.current = window.setTimeout(() => {
       pressFired.current = true;
-      // Haptic — platforms that support it get a short buzz as confirmation
       if (typeof navigator !== "undefined" && "vibrate" in navigator) {
         try { navigator.vibrate(18); } catch { /* non-fatal */ }
       }
-      setPreviewEvent(ev);
       setPressedId(null);
+      // Toggle: same event held again → close; otherwise open/switch.
+      if (expandedEvent && expandedEvent.id === ev.id) {
+        closeExpanded();
+      } else {
+        setExpandedEvent(ev);
+      }
     }, LONG_PRESS_MS);
   };
 
@@ -109,48 +144,49 @@ export default function EventsCarousel({ events, nearest, onEventSelect }: Props
     }
   };
 
-  const handlePointerUp = (ev: LocalEvent) => {
+  const handleCardPointerUp = (ev: LocalEvent) => {
     const fired = pressFired.current;
     cancelPress();
-    // Short tap only → select. Long press already handled above.
+    // Short tap on a CARD selects the destination (unchanged).
+    // Short tap on the DETAIL PANEL does nothing — only long-press closes.
     if (!fired) onEventSelect(ev);
   };
 
+  const handleDetailPointerUp = () => { cancelPress(); };
   const handlePointerCancel = () => { cancelPress(); };
 
-  // Close preview on Escape
+  // Escape closes the expanded view (desktop / keyboard users).
   useEffect(() => {
-    if (!previewEvent) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPreviewEvent(null);
-    };
+    if (!expandedEvent) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeExpanded(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [previewEvent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedEvent]);
 
-  // GSAP entrance for preview overlay (bottom-sheet feel). Reduced-motion
-  // fallback = instant show with opacity only.
+  // ── GSAP: open animation ───────────────────────────────────────────────
+  // Fires each time expandedEvent flips from null → a value. Carousel fades
+  // out and blurs; detail panel slides up and sharpens in. Follows the
+  // Emil-style entrance recipe from TRANSYNC_MASTER_SKILL §2 —
+  // expo.out default, blur-in premium tell, translate 12–16px, no bounce.
   useGSAP(() => {
-    if (!previewEvent) return;
+    if (!expandedEvent) return;
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduce) {
-      gsap.set(previewBackdropRef.current, { opacity: 1 });
-      gsap.set(previewSheetRef.current, { opacity: 1, y: 0 });
+      gsap.set(carouselLayerRef.current, { opacity: 0 });
+      gsap.set(detailPanelRef.current, { opacity: 1, y: 0, scale: 1, filter: "blur(0px)" });
       return;
     }
-    gsap.fromTo(
-      previewBackdropRef.current,
-      { opacity: 0 },
-      { opacity: 1, duration: 0.25, ease: "power2.out" }
+    gsap.to(carouselLayerRef.current, {
+      opacity: 0, scale: 0.985, filter: "blur(8px)",
+      duration: 0.3, ease: "expo.out",
+    });
+    gsap.fromTo(detailPanelRef.current,
+      { opacity: 0, y: 14, scale: 0.985, filter: "blur(12px)" },
+      { opacity: 1, y: 0, scale: 1, filter: "blur(0px)",
+        duration: 0.5, ease: "expo.out", delay: 0.1 }
     );
-    gsap.fromTo(
-      previewSheetRef.current,
-      { opacity: 0, y: 40, scale: 0.98, filter: "blur(8px)" },
-      { opacity: 1, y: 0, scale: 1, filter: "blur(0px)", duration: 0.45, ease: "expo.out" }
-    );
-  }, { dependencies: [previewEvent] });
-
-  const closePreview = () => setPreviewEvent(null);
+  }, { dependencies: [expandedEvent ? expandedEvent.id : null] });
 
   // ── ScrollTrigger parallax per card ────────────────────────────────────
   // Each card's three layers scrub against page scroll when the card is in
@@ -239,8 +275,11 @@ export default function EventsCarousel({ events, nearest, onEventSelect }: Props
         background: "rgba(2,6,23,0.88)",
         backdropFilter: "blur(20px)",
         boxShadow: "0 16px 32px rgba(0,0,0,0.3)",
-        overflow: "hidden" }}
+        overflow: "hidden",
+        position: "relative" /* anchor for the absolute detail panel */ }}
     >
+      {/* ── Carousel layer — fades / blurs out when detail panel opens ── */}
+      <div ref={carouselLayerRef} style={{ willChange: "transform, opacity, filter" }}>
       {/* ── Section header + long-press hint ── */}
       <div style={{ margin: "0 20px 12px", display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10 }}>
         <p style={{
@@ -257,14 +296,15 @@ export default function EventsCarousel({ events, nearest, onEventSelect }: Props
           fontFamily: "'DM Sans', sans-serif",
           margin: 0, whiteSpace: "nowrap",
         }}>
-          Hold for preview
+          Hold to expand
         </p>
       </div>
 
-      {/* ── Horizontal track (CSS-animated, pauses on hover) ── */}
+      {/* ── Horizontal track — scrolls forever; only pauses when a detail
+              panel is open (is-paused class). No hover/touch pause. ── */}
       <div style={{ overflow: "hidden", width: "100%" }}>
         <div
-          className="carousel-track"
+          className={`carousel-track${expandedEvent ? " is-paused" : ""}`}
           // Seamless loop: padding-right = gap so total track width =
           // 2N·(W+G) and translateX(-50%) lands exactly on item #N+1.
           // Any other padding breaks the math and produces a visible jump.
@@ -278,13 +318,13 @@ export default function EventsCarousel({ events, nearest, onEventSelect }: Props
               key={`${event.id}-${i}`}
               ref={(el) => { cardRefs.current[i] = el; }}
               data-index={i}
-              onPointerDown={(e) => handlePointerDown(e, event)}
+              onPointerDown={(e) => handlePointerDown(e, event, pressKey)}
               onPointerMove={handlePointerMove}
-              onPointerUp={() => handlePointerUp(event)}
+              onPointerUp={() => handleCardPointerUp(event)}
               onPointerCancel={handlePointerCancel}
               onPointerLeave={handlePointerCancel}
               onContextMenu={(e) => e.preventDefault()}
-              aria-label={`${event.name} — tap to select, long-press for preview`}
+              aria-label={`${event.name} — tap to select, long-press to expand detail`}
               style={{
                 position: "relative", overflow: "hidden",
                 width: 200, flexShrink: 0, height: 180,
@@ -380,161 +420,6 @@ export default function EventsCarousel({ events, nearest, onEventSelect }: Props
         </div>
       </div>
 
-      {/* ── Long-press preview modal ────────────────────────────────────
-          Centred sheet with backdrop. Short-tap on the backdrop closes.
-          GSAP handles entrance; exit uses React unmount (fast enough at 0
-          duration — the backdrop click feels instant). */}
-      {previewEvent && (
-        <div
-          ref={previewBackdropRef}
-          onClick={closePreview}
-          role="presentation"
-          style={{
-            position: "fixed", inset: 0, zIndex: 70,
-            background: "rgba(2,6,23,0.72)",
-            backdropFilter: "blur(6px)",
-            WebkitBackdropFilter: "blur(6px)" as unknown as string,
-            display: "flex", alignItems: "flex-end", justifyContent: "center",
-            padding: 16, opacity: 0,
-          }}
-        >
-          <div
-            ref={previewSheetRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label={`${previewEvent.name} preview`}
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              position: "relative",
-              width: "100%", maxWidth: 440,
-              borderRadius: 24,
-              border: "1px solid " + getCategoryColor(previewEvent.category) + "33",
-              borderLeft: "3px solid " + getCategoryColor(previewEvent.category) + "99",
-              background: "rgba(15,23,42,0.95)",
-              backdropFilter: "blur(24px)",
-              WebkitBackdropFilter: "blur(24px)" as unknown as string,
-              boxShadow:
-                "0 32px 80px rgba(0,0,0,0.7)," +
-                "0 0 0 1px rgba(255,255,255,0.04) inset," +
-                "0 -4px 24px " + getCategoryColor(previewEvent.category) + "22",
-              padding: "22px 22px 20px",
-              marginBottom: "env(safe-area-inset-bottom, 0px)",
-              opacity: 0,
-              fontFamily: "'DM Sans', sans-serif",
-            }}
-          >
-            {/* Close button */}
-            <button
-              onClick={closePreview}
-              aria-label="Close preview"
-              style={{
-                position: "absolute", top: 14, right: 14,
-                width: 32, height: 32, borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.08)",
-                background: "rgba(2,6,23,0.6)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                cursor: "pointer", color: "#94a3b8",
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
-
-            {/* Header: icon + category */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
-              <div style={{
-                width: 54, height: 54, borderRadius: 16,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                color: getCategoryColor(previewEvent.category),
-                background:
-                  "linear-gradient(135deg, " + getCategoryColor(previewEvent.category) + "22, rgba(2,6,23,0.6))",
-                border: "1px solid " + getCategoryColor(previewEvent.category) + "33",
-                flexShrink: 0,
-              }}>
-                <EventIcon id={previewEvent.id} size={28} />
-              </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <p style={{
-                  fontSize: 10, fontWeight: 600,
-                  color: getCategoryColor(previewEvent.category),
-                  textTransform: "uppercase", letterSpacing: "0.2em",
-                  margin: 0,
-                }}>
-                  {previewEvent.category}
-                </p>
-                <h3 style={{
-                  fontFamily: "'Orbitron', sans-serif",
-                  fontSize: 17, fontWeight: 700, color: "#f8fafc",
-                  margin: "3px 0 0", lineHeight: 1.25,
-                }}>
-                  {previewEvent.name}
-                </h3>
-              </div>
-            </div>
-
-            {/* Date + days away */}
-            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
-              <span style={{
-                fontFamily: "'Orbitron', sans-serif",
-                fontSize: 14, fontWeight: 600, color: "#38bdf8",
-              }}>
-                {previewEvent.date_display}
-              </span>
-              {previewEvent.days_away >= 0 && (
-                <span style={{ fontSize: 12, color: "#64748b" }}>
-                  · in {previewEvent.days_away} day{previewEvent.days_away === 1 ? "" : "s"}
-                </span>
-              )}
-            </div>
-
-            {/* Location */}
-            <p style={{
-              fontSize: 12, color: "#94a3b8",
-              margin: "0 0 12px", lineHeight: 1.45,
-            }}>
-              📍 {previewEvent.location}
-            </p>
-
-            {/* Traffic note — only surfaced on high impact */}
-            {previewEvent.traffic_impact === "high" && previewEvent.traffic_note && (
-              <div style={{
-                marginBottom: 12, padding: "10px 12px",
-                borderRadius: 12,
-                border: "1px solid rgba(239,68,68,0.28)",
-                background: "rgba(127,29,29,0.22)",
-              }}>
-                <p style={{
-                  fontSize: 11, fontWeight: 600, color: "#fca5a5",
-                  margin: 0, lineHeight: 1.5,
-                }}>
-                  {previewEvent.traffic_note}
-                </p>
-              </div>
-            )}
-
-            {/* Description */}
-            <p style={{
-              fontSize: 13, color: "#cbd5e1",
-              margin: "0 0 16px", lineHeight: 1.55,
-            }}>
-              {previewEvent.description}
-            </p>
-
-            {/* CTA */}
-            <button
-              onClick={() => { onEventSelect(previewEvent); closePreview(); }}
-              className="btn-gradient btn-tap"
-              style={{
-                width: "100%", borderRadius: 14, padding: "13px",
-                fontSize: 14, fontWeight: 700,
-              }}
-            >
-              Get route to venue →
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ── Nearest event dropdown ── */}
       {nearest && (
@@ -650,6 +535,174 @@ export default function EventsCarousel({ events, nearest, onEventSelect }: Props
               </div>
             </div>
           </div>
+        </div>
+      )}
+      </div>{/* end carouselLayerRef */}
+
+      {/* ═══ IN-PLACE DETAIL PANEL — MOBILE-FIRST UX ═══════════════════════
+          Long-press on a card → this panel fades in over the carousel.
+          Long-press again (on the panel background) → collapses back.
+          Short-tap on the CTA button triggers the route action.
+          No floating X button to overlap anything — close affordances are
+          (a) the large pill-shaped "Back" button at the bottom, (b) the X
+          at the top (large 40×40 tap target, padded away from header text),
+          (c) a long-press anywhere on the panel background. */}
+      {expandedEvent && (
+        <div
+          ref={detailPanelRef}
+          onPointerDown={(e) => handlePointerDown(e, expandedEvent, "detail-" + expandedEvent.id)}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handleDetailPointerUp}
+          onPointerCancel={handlePointerCancel}
+          onPointerLeave={handlePointerCancel}
+          onContextMenu={(e) => e.preventDefault()}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${expandedEvent.name} — detailed breakdown. Long-press or tap back to return.`}
+          style={{
+            position: "absolute", inset: 0,
+            display: "flex", flexDirection: "column",
+            padding: "18px 20px 18px",
+            background: "rgba(2,6,23,0.96)",
+            borderRadius: 24,
+            borderLeft: "3px solid " + getCategoryColor(expandedEvent.category) + "99",
+            opacity: 0,
+            overflowY: "auto",
+            // Mobile-first: disable native text-selection/callout during hold
+            userSelect: "none",
+            WebkitUserSelect: "none",
+            WebkitTouchCallout: "none",
+            touchAction: "pan-y", // allow vertical scroll of long descriptions
+            fontFamily: "'DM Sans', sans-serif",
+            willChange: "transform, opacity, filter",
+          }}
+        >
+          {/* ── Header row: category + X close (X never overlaps text) ── */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            marginBottom: 14, gap: 12,
+          }}>
+            <p style={{
+              fontSize: 10, fontWeight: 600,
+              color: getCategoryColor(expandedEvent.category),
+              textTransform: "uppercase", letterSpacing: "0.2em",
+              margin: 0, flex: 1, minWidth: 0,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>
+              {expandedEvent.category}
+            </p>
+            {/* 40×40 tap target — exceeds 44px guideline when margin is
+                counted. Sits in its own flex slot so no text can overlap it. */}
+            <button
+              onPointerDown={(e) => { e.stopPropagation(); }}
+              onClick={(e) => { e.stopPropagation(); closeExpanded(); }}
+              aria-label="Close detailed breakdown"
+              style={{
+                flexShrink: 0,
+                width: 40, height: 40, borderRadius: 12,
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "rgba(15,23,42,0.8)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                cursor: "pointer", color: "#cbd5e1",
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {/* ── Icon tile + title ── */}
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 12 }}>
+            <div style={{
+              width: 56, height: 56, borderRadius: 16,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              color: getCategoryColor(expandedEvent.category),
+              background:
+                "linear-gradient(135deg, " + getCategoryColor(expandedEvent.category) + "22, rgba(2,6,23,0.6))",
+              border: "1px solid " + getCategoryColor(expandedEvent.category) + "33",
+              flexShrink: 0,
+            }}>
+              <EventIcon id={expandedEvent.id} size={28} />
+            </div>
+            <h3 style={{
+              fontFamily: "'Orbitron', sans-serif",
+              fontSize: 18, fontWeight: 700, color: "#f8fafc",
+              margin: "4px 0 0", lineHeight: 1.25, flex: 1, minWidth: 0,
+            }}>
+              {expandedEvent.name}
+            </h3>
+          </div>
+
+          {/* ── Date + days away ── */}
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+            <span style={{
+              fontFamily: "'Orbitron', sans-serif",
+              fontSize: 14, fontWeight: 600, color: "#38bdf8",
+            }}>
+              {expandedEvent.date_display}
+            </span>
+            {expandedEvent.days_away >= 0 && (
+              <span style={{ fontSize: 12, color: "#64748b" }}>
+                · in {expandedEvent.days_away} day{expandedEvent.days_away === 1 ? "" : "s"}
+              </span>
+            )}
+          </div>
+
+          {/* ── Location ── */}
+          <p style={{
+            fontSize: 12, color: "#94a3b8",
+            margin: "0 0 12px", lineHeight: 1.45,
+          }}>
+            📍 {expandedEvent.location}
+          </p>
+
+          {/* ── Traffic warning (high impact only) ── */}
+          {expandedEvent.traffic_impact === "high" && expandedEvent.traffic_note && (
+            <div style={{
+              marginBottom: 12, padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid rgba(239,68,68,0.28)",
+              background: "rgba(127,29,29,0.22)",
+            }}>
+              <p style={{
+                fontSize: 11, fontWeight: 600, color: "#fca5a5",
+                margin: 0, lineHeight: 1.5,
+              }}>
+                {expandedEvent.traffic_note}
+              </p>
+            </div>
+          )}
+
+          {/* ── Description ── */}
+          <p style={{
+            fontSize: 13, color: "#cbd5e1",
+            margin: "0 0 14px", lineHeight: 1.55,
+          }}>
+            {expandedEvent.description}
+          </p>
+
+          {/* ── CTA — stopPropagation so panel's long-press doesn't fire ── */}
+          <button
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); onEventSelect(expandedEvent); closeExpanded(); }}
+            className="btn-gradient btn-tap"
+            style={{
+              width: "100%", borderRadius: 14, padding: "13px",
+              fontSize: 14, fontWeight: 700, marginTop: "auto",
+            }}
+          >
+            Get route to venue →
+          </button>
+
+          {/* ── Hint: hold again to return ── */}
+          <p style={{
+            fontSize: 9, fontWeight: 500, color: "#475569",
+            textTransform: "uppercase", letterSpacing: "0.15em",
+            margin: "10px 0 0", textAlign: "center",
+          }}>
+            Hold to return to events
+          </p>
         </div>
       )}
     </div>

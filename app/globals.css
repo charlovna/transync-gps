@@ -173,7 +173,11 @@ body {
 /* Pure CSS so the infinite loop runs off the compositor without costing a
    GSAP tween. The track is rendered with the events array duplicated; the
    -50% translate lands exactly at the start of the second copy, producing
-   a seamless loop. Paused on hover/touch so users can read cards. */
+   a seamless loop.
+   Mobile-first: NO hover/active pause. On touch devices, :active fires
+   during any vertical page scroll that started on the track, freezing the
+   carousel mid-motion. The carousel must keep scrolling regardless of where
+   the user is on the page — it's ambient motion, not an interactive target. */
 @keyframes carousel-scroll {
   0%   { transform: translateX(0); }
   100% { transform: translateX(-50%); }
@@ -181,8 +185,9 @@ body {
 .carousel-track {
   animation: carousel-scroll 40s linear infinite;
 }
-.carousel-track:hover,
-.carousel-track:active {
+/* The ONLY moment the carousel pauses: while a long-press has opened an
+   in-place detailed breakdown. Any other touch/hover MUST keep it scrolling. */
+.carousel-track.is-paused {
   animation-play-state: paused;
 }
 
