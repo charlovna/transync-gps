@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { gsap } from "gsap";
 import { useGSAP } from "@gsap/react";
 import LoadingScreen from "../components/LoadingScreen";
+import LoginEventsPreview from "../components/LoginEventsPreview";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -30,6 +31,12 @@ export default function LoginPage() {
   const cardRef     = useRef<HTMLDivElement>(null);
   const botPillRef  = useRef<HTMLDivElement>(null);
   const errorRef    = useRef<HTMLDivElement>(null);
+  // Non-interactive events ticker — advisory preview above the bottom pill
+  const previewRef  = useRef<HTMLDivElement>(null);
+  // Parallax-only — these two layers track the cursor. The card and pills
+  // never move. Rule: parallax on atmosphere, stability on content.
+  const bgRef       = useRef<HTMLDivElement>(null);
+  const gridRef     = useRef<HTMLDivElement>(null);
 
   // Auth token check — redirect if already signed in
   useEffect(() => {
@@ -38,6 +45,29 @@ export default function LoginPage() {
       sessionStorage.getItem("transync_token");
     if (token) router.push("/");
   }, [router]);
+
+  // ── Mouse-move parallax (bg layers only) ────────────────────────────────
+  // Only runs once the login is actually visible. bg moves slower (12/8),
+  // grid faster (20/14) — classic depth cue. Card/logo/pills NEVER move from
+  // the cursor (that would destroy the entrance timeline state).
+  // Respects prefers-reduced-motion; reset transforms + will-change on unmount.
+  useEffect(() => {
+    if (!loginVisible) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) return;
+    const handle = (e: MouseEvent) => {
+      const x = (e.clientX / window.innerWidth  - 0.5) * 2;
+      const y = (e.clientY / window.innerHeight - 0.5) * 2;
+      gsap.to(bgRef.current,   { x: x * 12, y: y * 8,  duration: 1.2, ease: "power2.out", overwrite: "auto" });
+      gsap.to(gridRef.current, { x: x * 20, y: y * 14, duration: 1.4, ease: "power2.out", overwrite: "auto" });
+    };
+    window.addEventListener("mousemove", handle);
+    return () => {
+      window.removeEventListener("mousemove", handle);
+      if (bgRef.current)   { bgRef.current.style.willChange = "auto"; }
+      if (gridRef.current) { gridRef.current.style.willChange = "auto"; }
+    };
+  }, [loginVisible]);
 
   // ── Entrance timeline — Emil-Kowalski-style blur-in ──────────────────────
   // Core principles:
@@ -71,6 +101,8 @@ export default function LoginPage() {
       gsap.set("[data-field]", {
         opacity: 0, y: 6, filter: "blur(6px)", force3D: true,
       });
+      // Events preview starts invisible — entrance timeline owns its fade-in
+      gsap.set(previewRef.current, { opacity: 0, y: 6, force3D: true });
 
       const tl = gsap.timeline({
         defaults: { ease: "expo.out", force3D: true },
@@ -99,7 +131,11 @@ export default function LoginPage() {
         }, 0.3)
         .to(botPillRef.current, {
           opacity: 1, y: 0, filter: "blur(0px)", duration: 0.55,
-        }, 0.32);
+        }, 0.32)
+        // Events preview reveals last — subtle, doesn't compete with entrance
+        .to(previewRef.current, {
+          opacity: 1, y: 0, duration: 0.5, ease: "power2.out",
+        }, 0.55);
 
       // ── Ambient life — runs forever after entrance ─────────────────────
       // The page was dead after the entrance finished. Adding a gentle breath
@@ -202,16 +238,30 @@ export default function LoginPage() {
             background: "#020617",
           }}
         >
-          {/* ── Background atmosphere ── */}
-          <div style={{ position: "absolute", inset: 0, zIndex: 0, background: "radial-gradient(ellipse 80% 60% at 50% -10%, rgba(6,182,212,0.13) 0%, transparent 70%)" }} />
-          <div style={{ position: "absolute", inset: 0, zIndex: 0, background: "radial-gradient(ellipse 60% 50% at 80% 100%, rgba(99,102,241,0.1) 0%, transparent 65%)" }} />
-          <div style={{ position: "absolute", inset: 0, zIndex: 0, background: "radial-gradient(ellipse 50% 40% at 10% 90%, rgba(16,185,129,0.07) 0%, transparent 60%)" }} />
-          <div style={{
-            position: "absolute", inset: 0, zIndex: 0,
-            background:
-              "linear-gradient(rgba(56,189,248,0.03) 1px, transparent 1px) 0 0 / 48px 48px," +
-              "linear-gradient(90deg, rgba(56,189,248,0.03) 1px, transparent 1px) 0 0 / 48px 48px",
-          }} />
+          {/* ── Background atmosphere (parallax target 1) ──
+              Three radial gradients grouped into one transform target so they
+              move as a single unit. Slower speed (x*12, y*8) than the grid. */}
+          <div
+            ref={bgRef}
+            style={{ position: "absolute", inset: 0, zIndex: 0, willChange: "transform", pointerEvents: "none" }}
+          >
+            <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse 80% 60% at 50% -10%, rgba(6,182,212,0.13) 0%, transparent 70%)" }} />
+            <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse 60% 50% at 80% 100%, rgba(99,102,241,0.1) 0%, transparent 65%)" }} />
+            <div style={{ position: "absolute", inset: 0, background: "radial-gradient(ellipse 50% 40% at 10% 90%, rgba(16,185,129,0.07) 0%, transparent 60%)" }} />
+          </div>
+          {/* ── Grid texture (parallax target 2) — faster speed for depth ── */}
+          <div
+            ref={gridRef}
+            style={{
+              position: "absolute", inset: 0, zIndex: 0,
+              willChange: "transform", pointerEvents: "none",
+              background:
+                "linear-gradient(rgba(56,189,248,0.03) 1px, transparent 1px) 0 0 / 48px 48px," +
+                "linear-gradient(90deg, rgba(56,189,248,0.03) 1px, transparent 1px) 0 0 / 48px 48px",
+            }}
+          />
+          {/* ── Scanline overlay — STATIC, never parallaxed (reads as
+              display glass, not atmosphere) ── */}
           <div style={{
             position: "absolute", inset: 0, zIndex: 1, pointerEvents: "none",
             backgroundImage: "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.08) 2px, rgba(0,0,0,0.08) 4px)",
@@ -481,6 +531,11 @@ export default function LoginPage() {
               </form>
             </div>
           </div>
+
+          {/* ── Events preview (non-interactive advisory ticker) ──
+              Sits above the bottom pill. Fetches /events silently, scrolls
+              infinitely via CSS. pointerEvents:none — preview only. */}
+          <LoginEventsPreview ref={previewRef} />
 
           {/* ── Bottom status pill ── */}
           <div

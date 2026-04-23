@@ -9,7 +9,7 @@ import AdvisoryPanel from "./components/AdvisoryPanel";
 import NavigationHUD from "./components/NavigationHUD";
 import ArrivalOverlay from "./components/ArrivalOverlay";
 import ProfileSheet from "./components/ProfileSheet";
-import type { LatLng, RouteData, WeatherData, RecentSearch, TripRecord, ProfileData, RiskBadge, WaypointStop } from "./lib/types";
+import type { LatLng, RouteData, WeatherData, RecentSearch, TripRecord, ProfileData, RiskBadge, WaypointStop, LocalEvent } from "./lib/types";
 
 // Must be module-level — stable reference required by useJsApiLoader
 const GOOGLE_MAPS_LIBRARIES: ("places" | "geometry" | "drawing")[] = ["places"];
@@ -133,6 +133,10 @@ export default function Home() {
   const [aiInsightLoading, setAiInsightLoading] = useState(false);
   const aiInsightFetchedRef                     = useRef(false); // guard: fires once per route
   const streamBufferRef                         = useRef("");    // raw received text
+  // PlannerPanel fetches /events and pushes the nearest one up via callback.
+  // Held in a ref so fetchAiInsight can read the latest value without being
+  // re-created on every events change (would break the "fires once" guard).
+  const nearestEventRef                         = useRef<LocalEvent | null>(null);
   const displayLenRef                           = useRef(0);    // chars currently shown
   const typewriterRef                           = useRef<number | null>(null);
 
@@ -412,6 +416,7 @@ export default function Home() {
           risk_level: data.risk_level,
           advisory_text: data.advisory_text,
           weather: weatherData,
+          nearest_event: nearestEventRef.current,
         }),
       });
       if (!res.ok || !res.body) return;
@@ -627,6 +632,7 @@ export default function Home() {
                 onToggleTripHistory={() => setShowTripHistory((p) => !p)}
                 onQuickDestination={setDestination}
                 isLoaded={isLoaded} authChecked={authChecked}
+                onNearestEventChange={(ev) => { nearestEventRef.current = ev; }}
               />
             )}
 

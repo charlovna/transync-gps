@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { LatLng, WeatherData, RecentSearch, TripRecord, RiskLevel, WaypointStop } from "../lib/types";
+import type { LatLng, WeatherData, RecentSearch, TripRecord, RiskLevel, WaypointStop, LocalEvent } from "../lib/types";
+import EventsCarousel from "./EventsCarousel";
 
 const POPULAR_DESTINATIONS = ["BigBen Complex", "Sico", "Balete", "SM City Lipa"];
 const LIPA_CITY_BOUNDS = { north: 14.0, south: 13.88, east: 121.23, west: 121.09 };
@@ -133,6 +134,9 @@ type Props = {
   onQuickDestination: (place: string) => void;
   isLoaded: boolean;
   authChecked: boolean;
+  // Passes the nearest event up to the orchestrator, which forwards it into
+  // the Synced Insight (AI advisory) request when within 7 days.
+  onNearestEventChange?: (ev: LocalEvent | null) => void;
 };
 
 export default function PlannerPanel({
@@ -145,10 +149,38 @@ export default function PlannerPanel({
   weatherData, weatherLoading, currentPosition,
   recentSearches, tripHistory, showTripHistory, onToggleTripHistory,
   onQuickDestination, isLoaded, authChecked,
+  onNearestEventChange,
 }: Props) {
   const destinationInputRef = useRef<HTMLInputElement>(null);
   const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
   const [destFocused, setDestFocused] = useState(false);
+
+  // ── Local events — fetched once on mount, no auth, fail silently ───────
+  const [events, setEvents] = useState<LocalEvent[]>([]);
+  const [nearest, setNearest] = useState<LocalEvent | null>(null);
+
+  useEffect(() => {
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL;
+    if (!backendUrl) return;
+    const ctrl = new AbortController();
+    fetch(`${backendUrl}/events`, { signal: ctrl.signal })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data) return;
+        setEvents(data.events || []);
+        setNearest(data.nearest || null);
+        onNearestEventChange?.(data.nearest || null);
+      })
+      .catch(() => { /* silent — carousel simply won't render */ });
+    return () => ctrl.abort();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleEventSelect = (ev: LocalEvent) => {
+    // Per spec: populate destination only — do NOT trigger Get Route Info.
+    onDestinationChange(ev.location);
+    onDestinationCoordsChange(ev.location_coords);
+  };
 
   useEffect(() => {
     if (!isLoaded || !authChecked || !destinationInputRef.current) return;
@@ -408,6 +440,13 @@ export default function PlannerPanel({
           </p>
         )}
       </div>
+
+      {/* ── Local Events · Lipa City ── */}
+      <EventsCarousel
+        events={events}
+        nearest={nearest}
+        onEventSelect={handleEventSelect}
+      />
 
       {/* ── Popular Destinations ── */}
       <div style={{ borderRadius: 24, padding: "18px 20px", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.88)", backdropFilter: "blur(20px)", boxShadow: "0 16px 32px rgba(0,0,0,0.3)" }}>

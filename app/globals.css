@@ -169,6 +169,23 @@ body {
   50%       { opacity: 1; }
 }
 
+/* ── Local Events horizontal carousel — CSS animation (not GSAP) ──────── */
+/* Pure CSS so the infinite loop runs off the compositor without costing a
+   GSAP tween. The track is rendered with the events array duplicated; the
+   -50% translate lands exactly at the start of the second copy, producing
+   a seamless loop. Paused on hover/touch so users can read cards. */
+@keyframes carousel-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.carousel-track {
+  animation: carousel-scroll 40s linear infinite;
+}
+.carousel-track:hover,
+.carousel-track:active {
+  animation-play-state: paused;
+}
+
 /* ── Arrival star rating ─────────────────────────────────────────────────── */
 .star-btn {
   background: transparent;
@@ -202,5 +219,9 @@ body {
   }
   .btn-tap:active {
     transform: none;
+  }
+  /* Carousel is infinite motion — halt on reduced-motion preference */
+  .carousel-track {
+    animation: none;
   }
 }

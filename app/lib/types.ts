@@ -72,3 +72,22 @@ export type ProfileData = {
 };
 
 export type RiskBadge = { bg: string; text: string };
+
+export type LocalEvent = {
+  id: string;
+  name: string;
+  description: string;
+  month: number;
+  day: number;
+  duration_days: number;
+  category: "fiesta" | "festival" | "religious" | "civic" | "cultural" | "trade";
+  traffic_impact: "low" | "medium" | "high";
+  traffic_note: string;
+  location: string;
+  location_coords: LatLng;
+  icon: string;
+  is_moveable?: boolean;
+  // Computed server-side:
+  date_display: string;  // "January 20, 2027"
+  days_away: number;
+};
