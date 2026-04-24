@@ -43,7 +43,7 @@ export default function LoginPage() {
     const token =
       localStorage.getItem("transync_token") ||
       sessionStorage.getItem("transync_token");
-    if (token) router.push("/");
+    if (token) router.push("/dashboard");
   }, [router]);
 
   // ── Mouse-move parallax (bg layers only) ────────────────────────────────
@@ -187,7 +187,7 @@ export default function LoginPage() {
       const store = staySignedIn ? localStorage : sessionStorage;
       store.setItem("transync_token", data.token);
       store.setItem("transync_user", JSON.stringify(data.user));
-      router.push("/");
+      router.push("/dashboard");
     } catch {
       setError("Unable to connect to Transync backend.");
     } finally {

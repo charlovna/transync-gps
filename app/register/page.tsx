@@ -21,7 +21,7 @@ export default function RegisterPage() {
     const token =
       localStorage.getItem("transync_token") ||
       sessionStorage.getItem("transync_token");
-    if (token) { router.push("/"); return; }
+    if (token) { router.push("/dashboard"); return; }
 
     const t1 = setTimeout(() => setPhase(1), 80);
     const t2 = setTimeout(() => setPhase(2), 600);
@@ -50,7 +50,7 @@ export default function RegisterPage() {
       sessionStorage.setItem("transync_token", data.token);
       sessionStorage.setItem("transync_user", JSON.stringify(data.user));
       setSuccess("Account created! Redirecting...");
-      setTimeout(() => router.push("/"), 1200);
+      setTimeout(() => router.push("/dashboard"), 1200);
     } catch {
       setError("Unable to connect to Transync backend.");
     } finally {
