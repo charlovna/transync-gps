@@ -245,7 +245,10 @@ export default function PlannerPanel({
   // ── Synced Insight entrance animation (fires once when analytics loads) ──
   useGSAP(() => {
     if (!insightRef.current) return;
-    gsap.from(insightRef.current, { opacity: 0, y: 20, duration: 0.4, ease: "back.out(1.4)" });
+    gsap.fromTo(insightRef.current,
+      { opacity: 0, y: 20 },
+      { opacity: 1, y: 0, duration: 0.4, ease: "back.out(1.4)", clearProps: "transform" }
+    );
   }, { dependencies: [!!analytics], revertOnUpdate: false });
 
   const destWrapStyle: React.CSSProperties = destFocused
@@ -662,7 +665,7 @@ export default function PlannerPanel({
       </div>
 
       {/* ── Synced Insight Analytics ── */}
-      {analytics && tripHistory.length >= 2 && (
+      {analytics && tripHistory.length >= 1 && (
         <div ref={insightRef} style={{ borderRadius: 24, padding: "18px 20px", border: "1px solid rgba(99,102,241,0.28)", background: "linear-gradient(135deg,rgba(30,27,75,0.6),rgba(15,23,42,0.92),rgba(49,46,129,0.5))", backdropFilter: "blur(20px)", boxShadow: "0 16px 32px rgba(0,0,0,0.3)" }}>
 
           {/* Header */}
