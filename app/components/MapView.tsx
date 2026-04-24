@@ -9,21 +9,13 @@ import {
 } from "@react-google-maps/api";
 import gsap from "gsap";
 
-const containerStyle: React.CSSProperties = {
-  width: "100%",
-  height: "100%",
-};
-
+const containerStyle: React.CSSProperties = { width: "100%", height: "100%" };
 const lipaCenter = { lat: 13.9411, lng: 121.1631 };
 
 type LatLng = { lat: number; lng: number };
 type RiskLevel = "Low" | "Medium" | "High";
 
-type WaypointStop = {
-  address: string;
-  coords: LatLng | null;
-  position?: LatLng;
-};
+type WaypointStop = { address: string; coords: LatLng | null; position?: LatLng };
 
 type AlternativeRoute = {
   polyline: LatLng[];
@@ -57,7 +49,16 @@ type MapViewProps = {
   userPos?: LatLng | null;
   zoomRequest?: { delta: number; seq: number };
   selectedRouteIndex?: number;
+  onSelectAlternative?: (index: number) => void;
 };
+
+// Risk → route stroke color (matches app badge palette)
+function riskColor(level?: string): string {
+  if (level === "High")   return "#ef4444";
+  if (level === "Medium") return "#f59e0b";
+  if (level === "Low")    return "#10b981";
+  return "#38bdf8"; // default / unknown
+}
 
 const midnightIndigoMapStyle: google.maps.MapTypeStyle[] = [
   { elementType: "geometry", stylers: [{ color: "#0f172a" }] },
@@ -119,23 +120,30 @@ export default function MapView({
   userPos = null,
   zoomRequest,
   selectedRouteIndex = 0,
+  onSelectAlternative,
 }: MapViewProps) {
-  const [heading, setHeading] = useState(0);
-  const [mapsReady, setMapsReady] = useState(false);
+  const [heading, setHeading]           = useState(0);
+  const [mapsReady, setMapsReady]       = useState(false);
   const [animatedPath, setAnimatedPath] = useState<LatLng[]>([]);
 
-  const mapRef               = useRef<google.maps.Map | null>(null);
-  const mapContainerRef      = useRef<HTMLDivElement>(null);
-  const loadingOverlayRef    = useRef<HTMLDivElement>(null);
-  const animationRef         = useRef<number | null>(null);
+  const mapRef                = useRef<google.maps.Map | null>(null);
+  const mapContainerRef       = useRef<HTMLDivElement>(null);
+  const loadingOverlayRef     = useRef<HTMLDivElement>(null);
+  const animationRef          = useRef<number | null>(null);
   const routeCameraTimeoutRef = useRef<number[]>([]);
-  const previousUserPosRef   = useRef<LatLng | null>(null);
-  const lastNavPanRef        = useRef<number>(0);
-  // GSAP tween refs — killed before starting a new one to prevent conflicts
-  const cameraPanTweenRef    = useRef<gsap.core.Tween | null>(null);
-  const zoomTweenRef         = useRef<gsap.core.Tween | null>(null);
+  const previousUserPosRef    = useRef<LatLng | null>(null);
+  const lastNavPanRef         = useRef<number>(0);
+  const cameraPanTweenRef     = useRef<gsap.core.Tween | null>(null);
+  const zoomTweenRef          = useRef<gsap.core.Tween | null>(null);
 
-  // ── Heading — computed from incoming userPos prop ─────────────────────────
+  // ── User interaction lock — stops auto-pan for 8s after user drags ────────
+  // Solves: map snapping back to user position when trying to inspect the route.
+  const userInteractedRef     = useRef(false);
+  const interactionTimerRef   = useRef<number | null>(null);
+
+  const activeRouteColor = riskColor(routeData?.risk_level);
+
+  // ── Heading from position delta ───────────────────────────────────────────
   useEffect(() => {
     if (!userPos) return;
     const prevPos = previousUserPosRef.current;
@@ -149,7 +157,7 @@ export default function MapView({
     previousUserPosRef.current = userPos;
   }, [userPos]);
 
-  // ── Map center ───────────────────────────────────────────────────────────
+  // ── Map center ────────────────────────────────────────────────────────────
   const mapCenter = useMemo(() => {
     if (tripStarted && userPos) return userPos;
     if (animatedPath.length > 0) return animatedPath[0];
@@ -157,7 +165,7 @@ export default function MapView({
     return userPos || lipaCenter;
   }, [tripStarted, userPos, animatedPath, routeData?.origin_position]);
 
-  // ── Route polyline animation ─────────────────────────────────────────────
+  // ── Route polyline animation ──────────────────────────────────────────────
   useEffect(() => {
     const fullPath = routeData?.polyline ?? [];
     if (animationRef.current) { window.clearInterval(animationRef.current); animationRef.current = null; }
@@ -181,7 +189,7 @@ export default function MapView({
     return () => { if (animationRef.current) { window.clearInterval(animationRef.current); animationRef.current = null; } };
   }, [routeData?.polyline]);
 
-  // ── Camera: route overview (before trip starts) ──────────────────────────
+  // ── Camera: route overview ────────────────────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !routeData?.polyline?.length || tripStarted || !mapsReady) return;
 
@@ -194,21 +202,25 @@ export default function MapView({
     if (routeData.destination_position) bounds.extend(routeData.destination_position);
     routeData.waypoints?.forEach((wp) => { if (wp.position) bounds.extend(wp.position); });
     routeData.polyline.forEach((p) => bounds.extend(p));
+    // Include alt route bounds so they're visible too
+    routeData.routes?.forEach((r) => r.polyline.forEach((p) => bounds.extend(p)));
 
     const focus = routeData.origin_position || routeData.polyline[0] || lipaCenter;
     map.panTo(focus);
     map.setZoom(16);
 
     const t1 = window.setTimeout(() => { map.panTo(focus); map.setZoom(17); }, 350);
-    const t2 = window.setTimeout(() => { map.fitBounds(bounds, 100); }, 1200);
+    const t2 = window.setTimeout(() => { map.fitBounds(bounds, 80); }, 1200);
     routeCameraTimeoutRef.current = [t1, t2];
 
     return () => { routeCameraTimeoutRef.current.forEach((id) => window.clearTimeout(id)); };
   }, [routeData?.polyline, routeData?.origin_position, routeData?.destination_position, tripStarted, mapsReady]);
 
-  // ── Camera: navigation follow — GSAP smooth interpolated pan ─────────────
+  // ── Camera: navigation follow — pauses while user is panning ─────────────
   useEffect(() => {
     if (!mapRef.current || !tripStarted || !userPos || !mapsReady) return;
+    // Don't fight the user — if they dragged recently, leave the map alone
+    if (userInteractedRef.current) return;
 
     const now = Date.now();
     if (now - lastNavPanRef.current < 800) return;
@@ -216,7 +228,6 @@ export default function MapView({
 
     const map = mapRef.current;
 
-    // Kill any in-flight pan and smoothly interpolate to new GPS position
     if (cameraPanTweenRef.current) cameraPanTweenRef.current.kill();
     const center = map.getCenter();
     if (center) {
@@ -232,137 +243,121 @@ export default function MapView({
       map.panTo(userPos);
     }
 
-    // Smooth zoom up to navigation level
     const currentZoom = map.getZoom() ?? 15;
     if (currentZoom < 17) {
       if (zoomTweenRef.current) zoomTweenRef.current.kill();
       const zObj = { z: currentZoom };
       zoomTweenRef.current = gsap.to(zObj, {
-        z: 17,
-        duration: 0.5,
-        ease: "power2.out",
+        z: 17, duration: 0.5, ease: "power2.out",
         onUpdate: () => map.setZoom(zObj.z),
       }) as gsap.core.Tween;
     }
 
-    if (gyroEnabled) {
-      map.setHeading(heading);
-      map.setTilt(45);
-    } else {
-      map.setHeading(0);
-      map.setTilt(0);
-    }
+    if (gyroEnabled) { map.setHeading(heading); map.setTilt(45); }
+    else             { map.setHeading(0);       map.setTilt(0); }
   }, [tripStarted, userPos, gyroEnabled, heading, mapsReady]);
 
-  // ── Camera: recenter button — GSAP smooth pan ────────────────────────────
+  // ── Camera: recenter — always works, clears interaction lock ─────────────
   useEffect(() => {
     if (!mapRef.current || !userPos || recenterRequest === 0 || !mapsReady) return;
 
-    const map = mapRef.current;
+    // Explicit recenter overrides user pan lock
+    userInteractedRef.current = false;
+    if (interactionTimerRef.current) { window.clearTimeout(interactionTimerRef.current); interactionTimerRef.current = null; }
 
+    const map = mapRef.current;
     if (cameraPanTweenRef.current) cameraPanTweenRef.current.kill();
     const center = map.getCenter();
     if (center) {
       const pos = { lat: center.lat(), lng: center.lng() };
       cameraPanTweenRef.current = gsap.to(pos, {
-        lat: userPos.lat,
-        lng: userPos.lng,
-        duration: 0.6,
-        ease: "power3.out",
+        lat: userPos.lat, lng: userPos.lng,
+        duration: 0.6, ease: "power3.out",
         onUpdate: () => map.setCenter({ lat: pos.lat, lng: pos.lng }),
       }) as gsap.core.Tween;
     } else {
       map.panTo(userPos);
     }
 
-    const targetZoom = tripStarted ? 17 : 16;
+    const targetZoom  = tripStarted ? 17 : 16;
     const currentZoom = map.getZoom() ?? 15;
     if (currentZoom < targetZoom) {
       if (zoomTweenRef.current) zoomTweenRef.current.kill();
       const zObj = { z: currentZoom };
       zoomTweenRef.current = gsap.to(zObj, {
-        z: targetZoom,
-        duration: 0.5,
-        ease: "power2.out",
+        z: targetZoom, duration: 0.5, ease: "power2.out",
         onUpdate: () => map.setZoom(zObj.z),
       }) as gsap.core.Tween;
     }
 
-    if (tripStarted && gyroEnabled) {
-      map.setHeading(heading);
-      map.setTilt(45);
-    } else {
-      map.setHeading(0);
-      map.setTilt(0);
-    }
+    if (tripStarted && gyroEnabled) { map.setHeading(heading); map.setTilt(45); }
+    else                             { map.setHeading(0);       map.setTilt(0); }
   }, [recenterRequest, userPos, tripStarted, gyroEnabled, heading, mapsReady]);
 
-  // ── Zoom in / out requests — GSAP smooth zoom ───────────────────────────
+  // ── Zoom in/out from HUD buttons ──────────────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !mapsReady || !zoomRequest) return;
     const map = mapRef.current;
     const currentZoom = map.getZoom() ?? 15;
-    const targetZoom = Math.min(21, Math.max(3, currentZoom + zoomRequest.delta));
-
+    const targetZoom  = Math.min(21, Math.max(3, currentZoom + zoomRequest.delta));
     if (zoomTweenRef.current) zoomTweenRef.current.kill();
     const zObj = { z: currentZoom };
     zoomTweenRef.current = gsap.to(zObj, {
-      z: targetZoom,
-      duration: 0.35,
-      ease: "power2.out",
+      z: targetZoom, duration: 0.35, ease: "power2.out",
       onUpdate: () => map.setZoom(zObj.z),
     }) as gsap.core.Tween;
   }, [zoomRequest, mapsReady]);
 
-  // ── Loading overlay: GSAP fade in/out ────────────────────────────────────
+  // ── Loading overlay fade ───────────────────────────────────────────────────
   useEffect(() => {
     const el = loadingOverlayRef.current;
     if (!el) return;
     if (loading) {
       gsap.fromTo(el,
         { opacity: 0, y: 12, pointerEvents: "none" },
-        { opacity: 1, y: 0, duration: 0.3, ease: "power2.out",
-          onStart: () => { el.style.pointerEvents = "auto"; } }
+        { opacity: 1, y: 0, duration: 0.3, ease: "power2.out", onStart: () => { el.style.pointerEvents = "auto"; } }
       );
     } else {
-      gsap.to(el, {
-        opacity: 0, y: -8, duration: 0.25, ease: "power2.in",
-        onComplete: () => { el.style.pointerEvents = "none"; },
-      });
+      gsap.to(el, { opacity: 0, y: -8, duration: 0.25, ease: "power2.in", onComplete: () => { el.style.pointerEvents = "none"; } });
     }
   }, [loading]);
 
-  // ── Map container fade-in when Maps JS API first loads ───────────────────
+  // ── Map container fade-in ──────────────────────────────────────────────────
   useEffect(() => {
     if (isLoaded && mapContainerRef.current) {
-      gsap.fromTo(mapContainerRef.current,
-        { opacity: 0 },
-        { opacity: 1, duration: 0.5, ease: "power1.out" }
-      );
+      gsap.fromTo(mapContainerRef.current, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power1.out" });
     }
   }, [isLoaded]);
 
-  // ── Cleanup all GSAP tweens on unmount ───────────────────────────────────
+  // ── Cleanup ───────────────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       cameraPanTweenRef.current?.kill();
       zoomTweenRef.current?.kill();
       if (animationRef.current) window.clearInterval(animationRef.current);
+      if (interactionTimerRef.current) window.clearTimeout(interactionTimerRef.current);
     };
   }, []);
 
+  // ── Map load — attach interaction listener ────────────────────────────────
   const handleMapLoad = (map: google.maps.Map) => {
     mapRef.current = map;
     setMapsReady(true);
+
+    // When user drags, lock out auto-pan for 8 seconds
+    map.addListener("dragstart", () => {
+      userInteractedRef.current = true;
+      if (interactionTimerRef.current) window.clearTimeout(interactionTimerRef.current);
+      interactionTimerRef.current = window.setTimeout(() => {
+        userInteractedRef.current = false;
+      }, 8000);
+    });
   };
 
-  // ── Loading placeholder (Maps JS API not yet ready) ──────────────────────
+  // ── Loading placeholder ───────────────────────────────────────────────────
   if (!isLoaded) {
     return (
-      <div style={{
-        position: "absolute", inset: 0, background: "#020617",
-        display: "flex", alignItems: "center", justifyContent: "center",
-      }}>
+      <div style={{ position: "absolute", inset: 0, background: "#020617", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <p style={{ color: "#475569", fontSize: 14, fontFamily: "inherit" }}>Loading map...</p>
       </div>
     );
@@ -379,6 +374,20 @@ export default function MapView({
           strokeWeight: 2,
           rotation: heading,
           anchor: new google.maps.Point(0, 2),
+        }
+      : undefined;
+
+  // Alt route ETA badge icon (circle pill behind the label)
+  const altEtaIcon =
+    mapsReady && typeof google !== "undefined"
+      ? {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 18,
+          fillColor: "#0f172a",
+          fillOpacity: 0.92,
+          strokeColor: "#64748b",
+          strokeWeight: 1.5,
+          anchor: new google.maps.Point(0, 0),
         }
       : undefined;
 
@@ -404,7 +413,7 @@ export default function MapView({
           maxZoom: 21,
         }}
       >
-        {/* Live user position */}
+        {/* ── Live user position ── */}
         {userPos && (
           <Marker
             position={userPos}
@@ -413,28 +422,19 @@ export default function MapView({
           />
         )}
 
-        {/* Origin marker */}
+        {/* ── Origin marker ── */}
         {routeData?.origin_position && (
-          <Marker
-            position={routeData.origin_position}
-            title={routeData.origin_label || "Origin"}
-            label="A"
-          />
+          <Marker position={routeData.origin_position} title={routeData.origin_label || "Origin"} label="A" />
         )}
 
-        {/* Waypoint markers (B, C, D…) */}
+        {/* ── Waypoint markers ── */}
         {routeData?.waypoints?.map((wp, i) =>
           wp.position ? (
-            <Marker
-              key={`wp-${i}`}
-              position={wp.position}
-              title={wp.address || `Stop ${i + 1}`}
-              label={String.fromCharCode(66 + i)}
-            />
+            <Marker key={`wp-${i}`} position={wp.position} title={wp.address || `Stop ${i + 1}`} label={String.fromCharCode(66 + i)} />
           ) : null
         )}
 
-        {/* Destination marker — letter shifts if waypoints present */}
+        {/* ── Destination marker ── */}
         {routeData?.destination_position && (
           <Marker
             position={routeData.destination_position}
@@ -443,38 +443,120 @@ export default function MapView({
           />
         )}
 
-        {/* Traffic layer */}
+        {/* ── Traffic layer ── */}
         <TrafficLayer />
 
-        {/* Alternative routes (non-selected) — rendered beneath primary */}
-        {routeData?.routes?.map((alt, i) =>
-          i !== selectedRouteIndex && alt.polyline.length > 0 ? (
-            <Polyline
-              key={`alt-${i}`}
-              path={alt.polyline}
-              options={{ strokeColor: "#475569", strokeOpacity: 0.55, strokeWeight: 5, zIndex: 1 }}
-            />
-          ) : null
-        )}
+        {/* ══ ALTERNATIVE ROUTES — rendered beneath primary ══ */}
+        {routeData?.routes?.map((alt, i) => {
+          if (i === selectedRouteIndex || alt.polyline.length < 2) return null;
+          const midIdx = Math.floor(alt.polyline.length / 2);
+          const midPos = alt.polyline[midIdx];
+          const canSelect = !tripStarted && !!onSelectAlternative;
 
-        {/* Ghost route (faded full primary path) */}
+          return (
+            <span key={`alt-group-${i}`} style={{ display: "contents" }}>
+              {/* Dark casing under alt route for depth */}
+              <Polyline
+                path={alt.polyline}
+                options={{
+                  strokeColor: "#020617",
+                  strokeOpacity: 0.6,
+                  strokeWeight: 12,
+                  zIndex: 1,
+                  clickable: false,
+                }}
+              />
+              {/* Visible gray route */}
+              <Polyline
+                path={alt.polyline}
+                options={{
+                  strokeColor: "#64748b",
+                  strokeOpacity: 0.65,
+                  strokeWeight: 7,
+                  zIndex: 2,
+                  clickable: false,
+                }}
+              />
+              {/* Wide transparent hit target — makes tapping easy on mobile */}
+              {canSelect && (
+                <Polyline
+                  path={alt.polyline}
+                  options={{
+                    strokeColor: "#ffffff",
+                    strokeOpacity: 0.001,
+                    strokeWeight: 24,
+                    zIndex: 3,
+                    clickable: true,
+                  }}
+                  onClick={() => onSelectAlternative(i)}
+                />
+              )}
+              {/* ETA badge at route midpoint */}
+              {canSelect && altEtaIcon && (
+                <Marker
+                  position={midPos}
+                  icon={altEtaIcon}
+                  label={{
+                    text: `${alt.eta_minutes} min`,
+                    color: "#cbd5e1",
+                    fontSize: "11px",
+                    fontWeight: "700",
+                  }}
+                  title={`${alt.eta_minutes} min${alt.distance_km ? ` · ${alt.distance_km} km` : ""} — tap to select`}
+                  onClick={() => onSelectAlternative(i)}
+                  zIndex={4}
+                />
+              )}
+            </span>
+          );
+        })}
+
+        {/* ══ PRIMARY (SELECTED) ROUTE ══ */}
+
+        {/* Dark casing for depth — rendered full width under everything */}
         {routeData?.polyline && routeData.polyline.length > 0 && (
           <Polyline
             path={routeData.polyline}
-            options={{ strokeColor: "#60a5fa", strokeOpacity: 0.2, strokeWeight: 7, zIndex: 2 }}
+            options={{
+              strokeColor: "#020617",
+              strokeOpacity: 0.5,
+              strokeWeight: 14,
+              zIndex: 5,
+              clickable: false,
+            }}
           />
         )}
 
-        {/* Animated route (solid, draws in on load) */}
+        {/* Ghost: full route at low opacity so user can see the whole path */}
+        {routeData?.polyline && routeData.polyline.length > 0 && (
+          <Polyline
+            path={routeData.polyline}
+            options={{
+              strokeColor: activeRouteColor,
+              strokeOpacity: 0.18,
+              strokeWeight: 8,
+              zIndex: 6,
+              clickable: false,
+            }}
+          />
+        )}
+
+        {/* Animated route — draws in, risk-level colored */}
         {animatedPath.length > 1 && (
           <Polyline
             path={animatedPath}
-            options={{ strokeColor: "#38bdf8", strokeOpacity: 1, strokeWeight: 7, zIndex: 3 }}
+            options={{
+              strokeColor: activeRouteColor,
+              strokeOpacity: 1,
+              strokeWeight: 8,
+              zIndex: 7,
+              clickable: false,
+            }}
           />
         )}
       </GoogleMap>
 
-      {/* Loading overlay — always in DOM, GSAP drives opacity/position */}
+      {/* Loading overlay */}
       <div
         ref={loadingOverlayRef}
         style={{

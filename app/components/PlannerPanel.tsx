@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import gsap from "gsap";
+import { useGSAP } from "@gsap/react";
 import type { LatLng, WeatherData, RecentSearch, TripRecord, RiskLevel, WaypointStop, LocalEvent } from "../lib/types";
 import EventsCarousel from "./EventsCarousel";
 
@@ -20,11 +22,11 @@ function timeAgo(dateStr: string): string {
   return `${days} days ago`;
 }
 
-function tripRiskBadge(level: RiskLevel): { bg: string; text: string } {
+function tripRiskBadge(level: RiskLevel): { bg: string; text: string; glowClass: string } {
   switch (level) {
-    case "Low":    return { bg: "#10b981", text: "#fff" };
-    case "Medium": return { bg: "#eab308", text: "#0f172a" };
-    case "High":   return { bg: "#ef4444", text: "#fff" };
+    case "Low":    return { bg: "#10b981", text: "#fff",    glowClass: "badge-low" };
+    case "Medium": return { bg: "#eab308", text: "#0f172a", glowClass: "badge-medium" };
+    case "High":   return { bg: "#ef4444", text: "#fff",    glowClass: "badge-high" };
   }
 }
 
@@ -93,7 +95,7 @@ function WaypointRow({ index, value, onChange, onRemove, isLoaded, authChecked }
           className="btn-tap"
           title="Remove stop"
           style={{ flexShrink: 0, width: 36, height: 36, borderRadius: 12, border: "1px solid rgba(239,68,68,0.25)", background: "rgba(239,68,68,0.08)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#f87171" }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <path d="M18 6L6 18M6 6l12 12"/>
           </svg>
         </button>
@@ -134,9 +136,8 @@ type Props = {
   onQuickDestination: (place: string) => void;
   isLoaded: boolean;
   authChecked: boolean;
-  // Passes the nearest event up to the orchestrator, which forwards it into
-  // the Synced Insight (AI advisory) request when within 7 days.
   onNearestEventChange?: (ev: LocalEvent | null) => void;
+  onReRouteFromTrip?: (label: string) => void;
 };
 
 export default function PlannerPanel({
@@ -150,13 +151,16 @@ export default function PlannerPanel({
   recentSearches, tripHistory, showTripHistory, onToggleTripHistory,
   onQuickDestination, isLoaded, authChecked,
   onNearestEventChange,
+  onReRouteFromTrip,
 }: Props) {
   const destinationInputRef = useRef<HTMLInputElement>(null);
-  const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
-  const [destFocused, setDestFocused] = useState(false);
+  const autocompleteRef     = useRef<google.maps.places.Autocomplete | null>(null);
+  const insightRef          = useRef<HTMLDivElement>(null);
+  const [destFocused, setDestFocused]       = useState(false);
+  const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
 
-  // ── Local events — fetched once on mount, no auth, fail silently ───────
-  const [events, setEvents] = useState<LocalEvent[]>([]);
+  // ── Local events ─────────────────────────────────────────────────────
+  const [events, setEvents]   = useState<LocalEvent[]>([]);
   const [nearest, setNearest] = useState<LocalEvent | null>(null);
 
   useEffect(() => {
@@ -171,13 +175,12 @@ export default function PlannerPanel({
         setNearest(data.nearest || null);
         onNearestEventChange?.(data.nearest || null);
       })
-      .catch(() => { /* silent — carousel simply won't render */ });
+      .catch(() => { /* silent */ });
     return () => ctrl.abort();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleEventSelect = (ev: LocalEvent) => {
-    // Per spec: populate destination only — do NOT trigger Get Route Info.
     onDestinationChange(ev.location);
     onDestinationCoordsChange(ev.location_coords);
   };
@@ -210,6 +213,41 @@ export default function PlannerPanel({
     destinationInputRef.current?.focus();
   };
 
+  // ── Analytics (memoized from trip history) ──────────────────────────
+  const analytics = useMemo(() => {
+    if (tripHistory.length === 0) return null;
+    const low    = tripHistory.filter((t) => t.risk_level === "Low").length;
+    const medium = tripHistory.filter((t) => t.risk_level === "Medium").length;
+    const high   = tripHistory.filter((t) => t.risk_level === "High").length;
+    const withEta   = tripHistory.filter((t) => t.eta_minutes != null);
+    const avgEta    = withEta.length ? Math.round(withEta.reduce((s, t) => s + (t.eta_minutes ?? 0), 0) / withEta.length) : null;
+    const withDist  = tripHistory.filter((t) => t.distance_km != null);
+    const totalDist = withDist.length ? +withDist.reduce((s, t) => s + (t.distance_km ?? 0), 0).toFixed(1) : null;
+    const freq: Record<string, number> = {};
+    for (const t of tripHistory) { const k = t.destination_label || "Unknown"; freq[k] = (freq[k] || 0) + 1; }
+    const topEntry = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
+    return { low, medium, high, total: tripHistory.length, avgEta, totalDist, topDest: topEntry ? { label: topEntry[0], count: topEntry[1] } : null };
+  }, [tripHistory]);
+
+  const syncedInsight = useMemo(() => {
+    if (!analytics) return "Complete your first trip to unlock AI-powered insights.";
+    if (analytics.high > analytics.low && analytics.high > analytics.medium)
+      return "Your routes trend high-risk. Transync suggests off-peak travel for safer conditions.";
+    if (analytics.avgEta && analytics.avgEta > 30)
+      return `Your average trip runs ${analytics.avgEta} min. Leaving 15 min earlier cuts congestion significantly.`;
+    if (analytics.topDest && analytics.topDest.count >= 2)
+      return `You visit ${analytics.topDest.label} frequently. Transync has learned your fastest path there.`;
+    if (weatherData && weatherData.precipitation > 0)
+      return `Rain detected (${weatherData.precipitation}mm). Route weights shift to covered, lower-risk paths.`;
+    return "You're consistently choosing low-risk routes. Transync's algorithm is working for you.";
+  }, [analytics, weatherData]);
+
+  // ── Synced Insight entrance animation (fires once when analytics loads) ──
+  useGSAP(() => {
+    if (!insightRef.current) return;
+    gsap.from(insightRef.current, { opacity: 0, y: 20, duration: 0.4, ease: "back.out(1.4)" });
+  }, { dependencies: [!!analytics], revertOnUpdate: false });
+
   const destWrapStyle: React.CSSProperties = destFocused
     ? { borderRadius: 16, padding: "12px 14px", border: "1px solid rgba(56,189,248,0.6)", background: "rgba(15,23,42,0.9)", boxShadow: "0 0 0 3px rgba(56,189,248,0.1), inset -2px -2px 6px rgba(255,255,255,0.04), inset 2px 2px 8px rgba(0,0,0,0.5)", transition: "border-color 0.2s ease, box-shadow 0.2s ease" }
     : { borderRadius: 16, padding: "12px 14px", border: "1px solid rgba(251,146,60,0.3)", background: "rgba(15,23,42,0.9)", boxShadow: "inset -2px -2px 6px rgba(255,255,255,0.04), inset 2px 2px 8px rgba(0,0,0,0.5)", transition: "border-color 0.2s ease, box-shadow 0.2s ease" };
@@ -238,14 +276,14 @@ export default function PlannerPanel({
 
       {/* ── Route input ── */}
       <div style={{ borderRadius: 26, padding: "20px", border: "1px solid rgba(255,255,255,0.09)", background: "rgba(2,6,23,0.92)", backdropFilter: "blur(20px)", boxShadow: "0 20px 40px rgba(0,0,0,0.4)" }}>
-        {/* ── Transport mode selector ── */}
+        {/* Transport mode selector */}
         <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
           {([
             {
               key: "driving" as const,
               label: "4 Wheels",
               icon: (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M5 11l1.5-4.5h11L19 11M17 16a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zm-7 0a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM3 11.5V17h1v1.5A.5.5 0 0 0 4.5 19h1a.5.5 0 0 0 .5-.5V17h11v1.5a.5.5 0 0 0 .5.5h1a.5.5 0 0 0 .5-.5V17h1v-5.5L19 11H5l-2 .5z"/>
                 </svg>
               ),
@@ -254,7 +292,7 @@ export default function PlannerPanel({
               key: "bicycling" as const,
               label: "2 Wheels",
               icon: (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="5.5" cy="15.5" r="3.5"/>
                   <circle cx="18.5" cy="15.5" r="3.5"/>
                   <path d="M15 6h-5l-1.5 5.5M15 6l3.5 9.5M9.5 11.5l5 .5"/>
@@ -266,7 +304,7 @@ export default function PlannerPanel({
               key: "walking" as const,
               label: "Walk",
               icon: (
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="12" cy="4" r="1.5"/>
                   <path d="M9 8.5l-2 6M15 8.5l2 6M10 8.5h4l1 3.5-3 2 1 4M9 8.5l-1 4 3 1.5"/>
                 </svg>
@@ -300,27 +338,21 @@ export default function PlannerPanel({
         </div>
 
         <div style={{ display: "flex", gap: 14 }}>
-
           {/* Left connector rail */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 28, flexShrink: 0 }}>
-            {/* Origin dot */}
             <div style={{ width: 14, height: 14, borderRadius: "50%", border: "3px solid #67e8f9", background: "#22d3ee", boxShadow: "0 0 12px rgba(34,211,238,0.6)", flexShrink: 0 }} />
-            {/* Waypoint segments + dots */}
             {waypointInputs.map((_, i) => (
               <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
                 <div style={{ width: 2, height: 52, margin: "5px 0", borderRadius: 2, background: "linear-gradient(to bottom,#22d3ee,#7dd3fc)", flexShrink: 0 }} />
                 <div style={{ width: 10, height: 10, borderRadius: "50%", border: "2px solid #7dd3fc", background: "#0ea5e9", boxShadow: "0 0 8px rgba(125,211,252,0.5)", flexShrink: 0 }} />
               </div>
             ))}
-            {/* Final line to destination */}
             <div style={{ width: 2, flex: 1, margin: "6px 0", minHeight: 40, borderRadius: 2, background: waypointInputs.length > 0 ? "linear-gradient(to bottom,#7dd3fc,#fb923c)" : "linear-gradient(to bottom,#22d3ee,#475569,#fb923c)", flexShrink: 0 }} />
-            {/* Destination dot */}
             <div style={{ width: 14, height: 14, borderRadius: "50%", border: "3px solid #fdba74", background: "#fb923c", boxShadow: "0 0 12px rgba(251,146,60,0.6)", flexShrink: 0 }} />
           </div>
 
           {/* Right fields */}
           <div style={{ flex: 1, minWidth: 0 }}>
-            {/* Origin */}
             <div style={{ marginBottom: 16 }}>
               <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 6 }}>Starting Point</label>
               <div style={{ borderRadius: 16, padding: "12px 14px", border: "1px solid rgba(34,211,238,0.3)", background: "rgba(15,23,42,0.9)", boxShadow: "inset -2px -2px 6px rgba(255,255,255,0.04), inset 2px 2px 8px rgba(0,0,0,0.5)" }}>
@@ -336,7 +368,6 @@ export default function PlannerPanel({
               </div>
             </div>
 
-            {/* Waypoint rows */}
             {waypointInputs.map((wp, i) => (
               <div key={i} style={{ marginBottom: 16 }}>
                 <WaypointRow
@@ -350,7 +381,6 @@ export default function PlannerPanel({
               </div>
             ))}
 
-            {/* Destination */}
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                 <label style={{ fontSize: 11, fontWeight: 600, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.14em" }}>
@@ -361,7 +391,7 @@ export default function PlannerPanel({
                     onClick={onWaypointAdd}
                     className="btn-tap"
                     style={{ fontSize: 11, fontWeight: 600, color: "#7dd3fc", background: "rgba(125,211,252,0.08)", border: "1px solid rgba(125,211,252,0.2)", borderRadius: 10, padding: "4px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                    <svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                       <path d="M12 5v14M5 12h14"/>
                     </svg>
                     Add Stop
@@ -386,10 +416,9 @@ export default function PlannerPanel({
           </div>
         </div>
 
-        {/* Stop count badge */}
         {waypointInputs.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 12, padding: "7px 12px", borderRadius: 12, background: "rgba(125,211,252,0.06)", border: "1px solid rgba(125,211,252,0.15)" }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7dd3fc" strokeWidth="2" strokeLinecap="round">
+            <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7dd3fc" strokeWidth="2" strokeLinecap="round">
               <circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
             </svg>
             <p style={{ fontSize: 12, color: "#7dd3fc", fontWeight: 600 }}>
@@ -403,10 +432,10 @@ export default function PlannerPanel({
           disabled={loading || !isValid || gpsLoading}
           className="btn-gradient"
           style={{ width: "100%", marginTop: 18, borderRadius: 18, padding: "16px", fontSize: 16, boxShadow: "0 8px 24px rgba(6,182,212,0.3)" }}>
-          {loading ? "Generating Route Info..." : gpsLoading ? "Waiting for GPS..." : `Get Route Info  →`}
+          {loading ? "Generating Route Info..." : gpsLoading ? "Waiting for GPS..." : "Get Route Info  →"}
         </button>
         {error && (
-          <div style={{ marginTop: 12, borderRadius: 14, padding: "10px 14px", border: "1px solid rgba(239,68,68,0.3)", background: "rgba(127,29,29,0.4)", fontSize: 13, color: "#fca5a5" }}>
+          <div role="alert" aria-live="assertive" style={{ marginTop: 12, borderRadius: 14, padding: "10px 14px", border: "1px solid rgba(239,68,68,0.3)", background: "rgba(127,29,29,0.4)", fontSize: 13, color: "#fca5a5" }}>
             {error}
           </div>
         )}
@@ -419,7 +448,7 @@ export default function PlannerPanel({
           <p style={{ fontSize: 13, color: "#475569" }}>Detecting conditions...</p>
         ) : weatherData ? (
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <span style={{ fontSize: 40, lineHeight: 1, flexShrink: 0 }}>{weatherData.condition.icon}</span>
+            <span aria-hidden="true" style={{ fontSize: 40, lineHeight: 1, flexShrink: 0 }}>{weatherData.condition.icon}</span>
             <div style={{ flex: 1 }}>
               <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                 <span className="font-orbitron" style={{ fontSize: 28, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>{weatherData.temperature}°C</span>
@@ -442,11 +471,7 @@ export default function PlannerPanel({
       </div>
 
       {/* ── Local Events · Lipa City ── */}
-      <EventsCarousel
-        events={events}
-        nearest={nearest}
-        onEventSelect={handleEventSelect}
-      />
+      <EventsCarousel events={events} nearest={nearest} onEventSelect={handleEventSelect} />
 
       {/* ── Popular Destinations ── */}
       <div style={{ borderRadius: 24, padding: "18px 20px", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.88)", backdropFilter: "blur(20px)", boxShadow: "0 16px 32px rgba(0,0,0,0.3)" }}>
@@ -493,37 +518,253 @@ export default function PlannerPanel({
             {tripHistory.length > 0 && (
               <span style={{ borderRadius: 99, padding: "3px 10px", fontSize: 11, fontWeight: 700, background: "rgba(56,189,248,0.15)", color: "#38bdf8" }}>{tripHistory.length}</span>
             )}
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2"
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2"
               style={{ transform: showTripHistory ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
               <path d="M6 9l6 6 6-6"/>
             </svg>
           </div>
         </button>
+
         {showTripHistory && (
           <div style={{ padding: "0 20px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
             {tripHistory.length === 0 ? (
               <p style={{ fontSize: 13, color: "#475569", textAlign: "center", padding: "12px 0" }}>No trips yet. Start a trip to see your history.</p>
             ) : tripHistory.map((trip) => {
-              const badge = tripRiskBadge(trip.risk_level);
+              const badge      = tripRiskBadge(trip.risk_level);
+              const isExpanded = selectedTripId === trip.id;
+
+              // Contextual re-route tip
+              const tip = trip.risk_level === "High"
+                ? "Route was high-risk last time. Transync will re-evaluate conditions for a safer path."
+                : weatherData && weatherData.precipitation > 0
+                ? `Rain today (${weatherData.precipitation}mm). Route weights shift to safer, covered paths.`
+                : trip.eta_minutes && trip.eta_minutes > 30
+                ? `Last trip took ${trip.eta_minutes} min. Transync may find a faster route today.`
+                : `Conditions look good. Transync will optimize your route to ${trip.destination_label || "your destination"}.`;
+
+              // Benchmark vs user average
+              const etaDelta  = analytics?.avgEta != null && trip.eta_minutes != null
+                ? analytics.avgEta - trip.eta_minutes
+                : null;
+              const avgDist   = analytics?.totalDist != null && analytics.total > 0
+                ? analytics.totalDist / analytics.total
+                : null;
+              const distDelta = avgDist !== null && trip.distance_km != null
+                ? +(trip.distance_km - avgDist).toFixed(1)
+                : null;
+
               return (
-                <button key={trip.id} onClick={() => handleQuickDestinationLocal(trip.destination_label)}
-                  className="btn-tap"
-                  style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", borderRadius: 16, padding: "13px 14px", border: "1px solid rgba(255,255,255,0.05)", background: "rgba(15,23,42,0.5)", textAlign: "left", cursor: "pointer", gap: 10 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ fontSize: 14, fontWeight: 600, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{trip.destination_label || "Unknown destination"}</p>
-                    <p style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
-                      {trip.eta_minutes ? `${trip.eta_minutes} min` : "—"}
-                      {trip.distance_km ? ` · ${trip.distance_km} km` : ""}
-                      {" · "}{timeAgo(trip.started_at)}
-                    </p>
-                  </div>
-                  <span style={{ flexShrink: 0, padding: "3px 9px", borderRadius: 99, fontSize: 11, fontWeight: 700, background: badge.bg, color: badge.text }}>{trip.risk_level}</span>
-                </button>
+                <div key={trip.id} style={{ borderRadius: 16, border: isExpanded ? "1px solid rgba(99,102,241,0.35)" : "1px solid rgba(255,255,255,0.05)", background: "rgba(15,23,42,0.5)", overflow: "hidden", transition: "border-color 0.2s" }}>
+                  {/* Header row */}
+                  <button
+                    onClick={() => setSelectedTripId(isExpanded ? null : trip.id)}
+                    className="btn-tap"
+                    style={{ width: "100%", display: "flex", alignItems: "flex-start", justifyContent: "space-between", padding: "13px 14px", background: "transparent", border: "none", textAlign: "left", cursor: "pointer", gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ fontSize: 14, fontWeight: 600, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{trip.destination_label || "Unknown destination"}</p>
+                      <p style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                        {trip.eta_minutes ? `${trip.eta_minutes} min` : "—"}
+                        {trip.distance_km ? ` · ${trip.distance_km} km` : ""}
+                        {" · "}{timeAgo(trip.started_at)}
+                      </p>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                      <span className={badge.glowClass} style={{ padding: "3px 9px", borderRadius: 99, fontSize: 11, fontWeight: 700, background: badge.bg, color: badge.text }}>{trip.risk_level}</span>
+                      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" style={{ transition: "transform 0.2s", transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)", flexShrink: 0 }}>
+                        <path d="M6 9l6 6 6-6"/>
+                      </svg>
+                    </div>
+                  </button>
+
+                  {/* Expanded re-route card */}
+                  {isExpanded && (
+                    <div className="panel-slide-in" style={{ padding: "0 14px 14px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+
+                      {/* Last trip stats */}
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 12, marginBottom: 10 }}>
+                        <div className="neu-extruded" style={{ borderRadius: 12, padding: "10px 12px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.15)" }}>
+                          <p style={{ fontSize: 10, fontWeight: 600, color: "#818cf8", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Last ETA</p>
+                          <p className="font-orbitron" style={{ fontSize: 22, fontWeight: 800, color: "#f1f5f9", lineHeight: 1 }}>
+                            {trip.eta_minutes ?? "—"}
+                            {trip.eta_minutes != null && <span style={{ fontSize: 10, fontWeight: 500, color: "#64748b", marginLeft: 3 }}>min</span>}
+                          </p>
+                        </div>
+                        <div className="neu-extruded" style={{ borderRadius: 12, padding: "10px 12px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.15)" }}>
+                          <p style={{ fontSize: 10, fontWeight: 600, color: "#818cf8", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Distance</p>
+                          <p className="font-orbitron" style={{ fontSize: 22, fontWeight: 800, color: "#f1f5f9", lineHeight: 1 }}>
+                            {trip.distance_km ?? "—"}
+                            {trip.distance_km != null && <span style={{ fontSize: 10, fontWeight: 500, color: "#64748b", marginLeft: 3 }}>km</span>}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Benchmark vs your average */}
+                      {(etaDelta !== null || distDelta !== null) && (
+                        <div style={{ borderRadius: 12, padding: "10px 12px", background: "rgba(15,23,42,0.65)", border: "1px solid rgba(255,255,255,0.07)", marginBottom: 10 }}>
+                          <p style={{ fontSize: 10, fontWeight: 600, color: "#475569", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>vs. Your Average</p>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                            {/* ETA delta */}
+                            <div>
+                              <p style={{ fontSize: 10, fontWeight: 600, color: "#475569", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>ETA</p>
+                              {etaDelta === null ? (
+                                <p style={{ fontSize: 12, color: "#475569" }}>—</p>
+                              ) : Math.abs(etaDelta) < 2 ? (
+                                <p style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>≈ On average</p>
+                              ) : (
+                                <>
+                                  <p className="font-orbitron" style={{ fontSize: 16, fontWeight: 800, color: etaDelta > 0 ? "#10b981" : "#f59e0b", lineHeight: 1 }}>
+                                    {etaDelta > 0 ? "↓" : "↑"} {Math.abs(etaDelta)}<span style={{ fontSize: 9, fontWeight: 500, color: "#475569", marginLeft: 2 }}>min</span>
+                                  </p>
+                                  <p style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>{etaDelta > 0 ? "faster than avg" : "slower than avg"}</p>
+                                </>
+                              )}
+                            </div>
+                            {/* Distance delta */}
+                            <div>
+                              <p style={{ fontSize: 10, fontWeight: 600, color: "#475569", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>Distance</p>
+                              {distDelta === null ? (
+                                <p style={{ fontSize: 12, color: "#475569" }}>—</p>
+                              ) : Math.abs(distDelta) < 1 ? (
+                                <p style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>≈ Typical</p>
+                              ) : (
+                                <>
+                                  <p className="font-orbitron" style={{ fontSize: 16, fontWeight: 800, color: distDelta > 0 ? "#f59e0b" : "#10b981", lineHeight: 1 }}>
+                                    {distDelta > 0 ? "+" : ""}{distDelta}<span style={{ fontSize: 9, fontWeight: 500, color: "#475569", marginLeft: 2 }}>km</span>
+                                  </p>
+                                  <p style={{ fontSize: 10, color: "#475569", marginTop: 2 }}>{distDelta > 0 ? "longer than avg" : "shorter than avg"}</p>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* AI contextual tip */}
+                      <div style={{ borderRadius: 12, padding: "10px 12px", background: "rgba(167,139,250,0.06)", border: "1px solid rgba(167,139,250,0.15)", marginBottom: 12 }}>
+                        <p style={{ fontSize: 12, color: "#a78bfa", lineHeight: 1.55 }}>
+                          <span aria-hidden="true" className="synced-star">✦</span>{" "}{tip}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => { setSelectedTripId(null); onReRouteFromTrip?.(trip.destination_label || ""); }}
+                        className="btn-tap"
+                        style={{ width: "100%", padding: "11px 14px", borderRadius: 14, border: "1px solid rgba(99,102,241,0.4)", background: "linear-gradient(135deg,rgba(99,102,241,0.15),rgba(167,139,250,0.12))", fontSize: 13, fontWeight: 700, color: "#c4b5fd", cursor: "pointer", textAlign: "center" }}>
+                        Find Best Route Today →
+                      </button>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
         )}
       </div>
+
+      {/* ── Synced Insight Analytics ── */}
+      {analytics && tripHistory.length >= 2 && (
+        <div ref={insightRef} style={{ borderRadius: 24, padding: "18px 20px", border: "1px solid rgba(99,102,241,0.28)", background: "linear-gradient(135deg,rgba(30,27,75,0.6),rgba(15,23,42,0.92),rgba(49,46,129,0.5))", backdropFilter: "blur(20px)", boxShadow: "0 16px 32px rgba(0,0,0,0.3)" }}>
+
+          {/* Header */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span aria-hidden="true" className="synced-star" style={{ fontSize: 15, color: "#a78bfa" }}>✦</span>
+              <p style={{ fontSize: 11, fontWeight: 700, color: "#a78bfa", textTransform: "uppercase", letterSpacing: "0.14em" }}>Synced Insight</p>
+            </div>
+            <span style={{ fontSize: 10, fontWeight: 600, color: "#6366f1", background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 99, padding: "2px 9px", letterSpacing: "0.06em" }}>
+              AI · {analytics.total} trip{analytics.total !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          {/* Micrograph grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+
+            {/* Risk Profile */}
+            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 9 }}>Risk Profile</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {[
+                  { label: "Low",  count: analytics.low,    color: "#10b981" },
+                  { label: "Med",  count: analytics.medium, color: "#eab308" },
+                  { label: "High", count: analytics.high,   color: "#ef4444" },
+                ].map(({ label, count, color }) => (
+                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 10, fontWeight: 600, color, width: 26, flexShrink: 0 }}>{label}</span>
+                    <div style={{ flex: 1, height: 5, borderRadius: 99, background: "rgba(255,255,255,0.05)", overflow: "hidden" }}>
+                      <div style={{ height: "100%", borderRadius: 99, background: color, width: analytics.total > 0 ? `${(count / analytics.total) * 100}%` : "0%", transition: "width 0.5s ease" }} />
+                    </div>
+                    <span style={{ fontSize: 10, color: "#475569", width: 12, textAlign: "right", flexShrink: 0 }}>{count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Avg ETA */}
+            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Avg ETA</p>
+              <p className="font-orbitron" style={{ fontSize: 26, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>
+                {analytics.avgEta ?? "—"}
+                {analytics.avgEta && <span style={{ fontSize: 11, fontWeight: 500, color: "#475569", marginLeft: 4 }}>min</span>}
+              </p>
+              <p style={{ fontSize: 11, color: "#475569", marginTop: 6 }}>per trip average</p>
+            </div>
+
+            {/* Total Distance */}
+            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Total Distance</p>
+              <p className="font-orbitron" style={{ fontSize: 26, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>
+                {analytics.totalDist ?? "—"}
+                {analytics.totalDist && <span style={{ fontSize: 11, fontWeight: 500, color: "#475569", marginLeft: 4 }}>km</span>}
+              </p>
+              <p style={{ fontSize: 11, color: "#475569", marginTop: 6 }}>logged by Transync</p>
+            </div>
+
+            {/* Top Route */}
+            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Top Route</p>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "#f1f5f9", lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {analytics.topDest?.label ?? "—"}
+              </p>
+              {analytics.topDest && (
+                <p style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>{analytics.topDest.count}× visited</p>
+              )}
+            </div>
+
+            {/* Weather Analytics — full width */}
+            {weatherData && (
+              <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)", gridColumn: "1 / -1" }}>
+                <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 9 }}>Weather Analytics</p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <span aria-hidden="true" style={{ fontSize: 32, lineHeight: 1, flexShrink: 0 }}>{weatherData.condition.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                      <span className="font-orbitron" style={{ fontSize: 20, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>{weatherData.temperature}°C</span>
+                      <span style={{ fontSize: 12, color: "#94a3b8" }}>{weatherData.condition.label}</span>
+                    </div>
+                    <p style={{ fontSize: 11, marginTop: 5, fontWeight: 600, color: weatherData.precipitation > 0 ? "#f59e0b" : "#10b981" }}>
+                      {weatherData.precipitation > 0
+                        ? `🌧 ${weatherData.precipitation}mm rain · Risk weights elevated`
+                        : "✓ Clear conditions · Optimal routing active"}
+                    </p>
+                    {weatherData.wind_speed > 25 && (
+                      <p style={{ fontSize: 11, color: "#f87171", marginTop: 3 }}>💨 Strong wind {weatherData.wind_speed}km/h · Buffer ETA by ~5 min</p>
+                    )}
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <p style={{ fontSize: 11, color: "#475569" }}>Feels {weatherData.feels_like}°C</p>
+                    <p style={{ fontSize: 11, color: "#64748b", marginTop: 3 }}>💨 {weatherData.wind_speed} km/h</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* AI insight text */}
+          <div style={{ borderRadius: 14, padding: "11px 13px", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.15)" }}>
+            <p style={{ fontSize: 12, color: "#c4b5fd", lineHeight: 1.6 }}>{syncedInsight}</p>
+          </div>
+        </div>
+      )}
 
     </div>
   );

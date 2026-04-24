@@ -36,7 +36,7 @@ transync/
       components/
         LoadingScreen.tsx   ← Compass loading animation (8s, chaos → snap → crossfade into login)
         MapView.tsx         ← Google Maps component (receives isLoaded + userPos + zoomRequest as props)
-        PlannerPanel.tsx    ← Step 1: search form, waypoint stops, weather, popular destinations, recent searches, trip history
+        PlannerPanel.tsx    ← Step 1: search form, waypoint stops, weather, popular destinations, recent searches, trip history (expandable with per-trip benchmark), Synced Insight analytics card (risk profile, avg ETA, total distance, top route, weather analytics)
         AdvisoryPanel.tsx   ← Step 2: back arrow, multi-stop badge, ETA/traffic tiles, advisory text, AI insight card, gyro toggle, Start Trip
         NavigationHUD.tsx   ← Step 3: bottom HUD (minimize/expand) + Recenter/Zoom/Gyro FABs (ResizeObserver-driven placement)
         ArrivalOverlay.tsx  ← Arrival screen: checkmark, stats, star rating, Plan New Route
@@ -44,13 +44,17 @@ transync/
         EnvTest.tsx
       lib/
         types.ts            ← Shared TypeScript types: LatLng, RiskLevel, RouteData, WaypointStop, WeatherData, RecentSearch, TripRecord, ProfileData, RiskBadge
+      dashboard/
+        page.tsx            ← Standalone dashboard (dark, no map). Auth check, GPS, weather, events, recent searches, trip history. "Get Route" stores params to sessionStorage and navigates to /map.
+      map/
+        page.tsx            ← Full map + advisory + HUD orchestrator (was app/page.tsx). Reads sessionStorage on mount and auto-triggers route if data is present.
       login/
         page.tsx            ← Login page (renders LoadingScreen first, then crossfades into login card)
       register/
         page.tsx            ← Registration page
         TRANSYNC_HANDOOF.md ← This file
         transync_design_skill.md ← Design reference (fonts, colors, shadows, animations)
-      page.tsx              ← Orchestrator only: all state, all useEffects, all handlers
+      page.tsx              ← Root redirect only: router.replace("/dashboard")
       layout.tsx            ← PWA meta tags + manifest link + SmoothScroll wrapper
       globals.css           ← Global styles: fonts, btn-gradient, neumorphism classes, HUD handle, animations
       SmoothScroll.tsx      ← Lenis smooth scroll wrapper — wraps all children in layout.tsx
@@ -176,13 +180,17 @@ express, cors, dotenv, better-sqlite3, bcryptjs, jsonwebtoken
 
 ## 7. FRONTEND — KEY BEHAVIORS
 
-### Auth flow:
-1. App opens → `app/page.tsx` checks localStorage / sessionStorage for `transync_token`
-2. No token → redirect to `/login`
-3. Login success → token + user stored, redirect to `/`
-4. Main page calls `GET /auth/me` to verify token and get real username
-5. "Stay Signed In" checked → `localStorage`; unchecked → `sessionStorage`
-6. Sign out button clears both storages and redirects to `/login`
+### Auth flow (updated — 3-page routing):
+1. App opens at `/` → immediately `router.replace("/dashboard")`
+2. `/dashboard` checks localStorage / sessionStorage for `transync_token`
+3. No token → redirect to `/login`
+4. Login / register success → redirect to `/dashboard` (not `/`)
+5. Dashboard: shows planning UI (transport mode, GPS, destination, weather, events, history)
+6. "Get Route" → stores `{ destination, destinationCoords, travelMode, waypoints }` to `sessionStorage("transync_dashboard_route")` → `router.push("/map")`
+7. `/map` reads `transync_dashboard_route` on mount, pre-fills state, auto-triggers `handleGetRoute()` when GPS fires
+8. Advisory → Start Trip → Navigation HUD (all on `/map`)
+9. ArrivalOverlay "Dashboard" button → `router.push("/dashboard")`
+10. Sign out → `router.push("/login")` from either page
 
 ### Token storage keys:
 - `transync_token` — JWT string
@@ -276,9 +284,53 @@ type MapViewProps = {
   isLoaded?: boolean;
   userPos?: LatLng | null;
   zoomRequest?: { delta: number; seq: number };
-  selectedRouteIndex?: number;  // which route in routeData.routes[] is primary (default 0)
+  selectedRouteIndex?: number;           // which route in routeData.routes[] is primary (default 0)
+  onSelectAlternative?: (i: number) => void; // tap alt route on map to switch primary
 };
 ```
+
+### Route color by risk level:
+```tsx
+function riskColor(level?: string): string {
+  if (level === "High")   return "#ef4444"; // red
+  if (level === "Medium") return "#f59e0b"; // amber
+  if (level === "Low")    return "#10b981"; // green
+  return "#38bdf8"; // default cyan
+}
+```
+Both the ghost polyline and the animated primary polyline use `riskColor(routeData?.risk_level)`. A dark casing polyline (strokeWeight 14, `#020617`, 50% opacity) renders beneath the route for Google Maps-style depth.
+
+### Alt route layering (map, beneath primary):
+| Layer | strokeWeight | Color | Opacity | zIndex | Clickable |
+|---|---|---|---|---|---|
+| Alt casing | 12 | `#020617` | 0.6 | 1 | no |
+| Alt visible | 7 | `#64748b` | 0.65 | 2 | no |
+| Alt hit target | 24 | transparent | 0.001 | 3 | yes → `onSelectAlternative(i)` |
+| Alt ETA badge | Marker | dark circle | — | 4 | yes → `onSelectAlternative(i)` |
+| Primary casing | 14 | `#020617` | 0.5 | 5 | no |
+| Primary ghost | 8 | risk color | 0.18 | 6 | no |
+| Primary animated | 8 | risk color | 1.0 | 7 | no |
+
+Alt routes and ETA badges only render when `!tripStarted && !!onSelectAlternative`.
+ETA badge: `google.maps.SymbolPath.CIRCLE` (scale 18) + label `"N min"` at polyline midpoint.
+
+### User interaction lock (fixes auto-pan fighting user):
+```tsx
+const userInteractedRef   = useRef(false);
+const interactionTimerRef = useRef<number | null>(null);
+
+// In handleMapLoad:
+map.addListener("dragstart", () => {
+  userInteractedRef.current = true;
+  if (interactionTimerRef.current) window.clearTimeout(interactionTimerRef.current);
+  interactionTimerRef.current = window.setTimeout(() => {
+    userInteractedRef.current = false;
+  }, 8000); // resume auto-follow after 8s idle
+});
+```
+Navigation follow effect checks `if (userInteractedRef.current) return;` and skips the pan.
+Recenter button clears the lock immediately: `userInteractedRef.current = false`.
+
 
 ### Critical: `useJsApiLoader` lives in `page.tsx`, NOT MapView
 ```tsx
@@ -607,6 +659,10 @@ const inputWrapStyle = (field): CSSProperties => ({
 | `.synced-star` | ✦ icon — `violet-pulse` keyframe |
 | `.font-orbitron` | Orbitron font utility |
 | `.star-btn` | Star rating buttons — scale(1.2) on hover |
+| `.panel-slide-in` | Trip re-route expand panel — `slide-down-fade` 22ms ease-out, `will-change: transform, opacity` |
+| `.badge-low` | Risk badge glow — `box-shadow: 0 0 8px rgba(16,185,129,0.45)` |
+| `.badge-medium` | Risk badge glow — `box-shadow: 0 0 8px rgba(234,179,8,0.45)` |
+| `.badge-high` | Risk badge glow — `box-shadow: 0 0 8px rgba(239,68,68,0.45)` |
 
 ### z-index stack:
 | Layer | z-index |
@@ -874,10 +930,124 @@ Toast auto-hides after 4.5s via `toastTimerRef`. Previous timer is cleared on ea
 | Only one route returned from backend | `alternatives: "true"` in `getDirections()`, returns `data.routes` array, `/route` sorts and returns `routes[]` |
 | No live traffic overlay on map | `<TrafficLayer />` added inside GoogleMap in MapView.tsx |
 | ETA never updates from real traffic during trip | 3-min re-evaluation interval: re-fetches `/route` from current position, updates routeData if significant change, fires toast |
+| Map auto-pans back when user tries to drag during navigation | `userInteractedRef` + `dragstart` listener: nav-follow effect returns early for 8s after any drag; recenter clears lock immediately |
+| Route polyline always static cyan regardless of traffic risk | `riskColor()` helper maps Low→green, Medium→amber, High→red; both ghost and animated polyline use it |
+| Alt routes on map not tappable | Wide (24px) transparent hit-target polyline + Marker ETA badge at midpoint; both call `onSelectAlternative(i)` |
+| `app/page.tsx` doubled as orchestrator and entry point | Separated: `app/page.tsx` → root redirect only; orchestrator moved to `app/map/page.tsx`; new `app/dashboard/page.tsx` for pre-trip planning |
+| Login/register redirected to `/` (map page) | Now redirect to `/dashboard`; dashboard hands off route params via `sessionStorage("transync_dashboard_route")` |
+| Trip history items flat / not actionable | Items are now expandable — tap to reveal per-trip stats, benchmark comparison vs user average, AI tip, and "Find Best Route Today →" CTA |
+| No benchmark comparison per trip | `etaDelta = analytics.avgEta − trip.eta_minutes` (↓ green = faster, ↑ amber = slower); `distDelta = trip.distance_km − avgDist` — both shown in "vs. Your Average" micrograph |
+| No animated entrance on Synced Insight card | `useGSAP` with `{ opacity:0, y:20, duration:0.4, ease:"back.out(1.4)" }` fires once when `analytics` becomes truthy; `revertOnUpdate: false` prevents re-fire on re-render |
+| Trip expand panel appears abruptly | `.panel-slide-in` CSS class: `slide-down-fade` keyframe (opacity 0→1 + translateY -6→0, 22ms ease-out), halted by `prefers-reduced-motion` |
+| Risk badges have no visual weight | `.badge-low / .badge-medium / .badge-high` glow classes added to globals.css; applied to all risk badge spans in trip history items |
+| Micrograph metric numbers using body font | `font-orbitron` class applied to all large metric values (ETA, distance, benchmark deltas, avg ETA, total distance, weather temp) |
+| Micrograph cards lacking depth | `neu-extruded` class applied to all four Synced Insight cards and both trip stat cards |
+| No weather data in Synced Insight | Full-width 5th micrograph card (`gridColumn: "1 / -1"`) shows condition icon + temp + precipitation impact + wind warning — only renders when `weatherData` is available |
 
 ---
 
-## 24. DEPLOYMENT — NEXT STEPS (planned)
+## 24. DASHBOARD SYNCED INSIGHT ANALYTICS
+
+**File:** `app/components/PlannerPanel.tsx`
+**Scope:** Frontend only — no backend changes. All data computed client-side from `tripHistory` and `weatherData` props.
+**Renders when:** `analytics !== null && tripHistory.length >= 2`
+
+---
+
+### `analytics` useMemo
+
+```tsx
+const analytics = useMemo(() => {
+  if (tripHistory.length === 0) return null;
+  const low    = tripHistory.filter(t => t.risk_level === "Low").length;
+  const medium = tripHistory.filter(t => t.risk_level === "Medium").length;
+  const high   = tripHistory.filter(t => t.risk_level === "High").length;
+  const withEta   = tripHistory.filter(t => t.eta_minutes != null);
+  const avgEta    = withEta.length ? Math.round(...) : null;
+  const withDist  = tripHistory.filter(t => t.distance_km != null);
+  const totalDist = withDist.length ? +(sum).toFixed(1) : null;
+  // topDest = most-frequent destination_label
+  return { low, medium, high, total, avgEta, totalDist, topDest };
+}, [tripHistory]);
+```
+
+### `syncedInsight` useMemo (priority-ordered)
+
+1. `analytics.high > low && > medium` → off-peak travel suggestion
+2. `avgEta > 30` → leave-earlier recommendation with exact minutes
+3. `topDest.count >= 2` → personalised destination message
+4. `weatherData.precipitation > 0` → rain/risk-weight message
+5. Default → low-risk affirmation
+
+---
+
+### Micrograph grid (2×2 + optional full-width 5th)
+
+| Card | Data source | Key detail |
+|---|---|---|
+| Risk Profile | `analytics.low/medium/high` | Animated horizontal bars (`transition: width 0.5s ease`) |
+| Avg ETA | `analytics.avgEta` | Orbitron 800 26px |
+| Total Distance | `analytics.totalDist` | Orbitron 800 26px |
+| Top Route | `analytics.topDest.label + count` | truncated with `textOverflow: ellipsis` |
+| Weather Analytics | `weatherData` (prop) | `gridColumn: "1 / -1"` — only rendered when `weatherData !== null` |
+
+Weather card content: condition icon + temp (Orbitron) + label, precipitation impact line (amber if > 0, green if clear), strong-wind warning if > 25 km/h, feels-like + wind speed.
+
+---
+
+### Trip history expandable re-route card
+
+Clicking a trip item toggles `selectedTripId`. When expanded:
+
+1. **Last trip stats** — ETA + Distance grid (Orbitron 800 22px, `neu-extruded` cards)
+2. **vs. Your Average** benchmark:
+   ```
+   etaDelta  = analytics.avgEta − trip.eta_minutes   (positive = this trip faster → ↓ green)
+   distDelta = trip.distance_km − (totalDist / total)  (positive = longer → ↑ amber)
+   ```
+   Threshold: `|etaDelta| < 2` → "≈ On average"; `|distDelta| < 1` → "≈ Typical"
+3. **AI tip** — contextual, priority: High risk → rain → long ETA → default positive
+4. **"Find Best Route Today →"** — calls `onReRouteFromTrip(label)` prop → stores to `sessionStorage("transync_dashboard_route")` → navigates to `/map` where auto-trigger fires
+
+---
+
+### Animation implementation
+
+```tsx
+// GSAP entrance (fires once when analytics first becomes truthy)
+useGSAP(() => {
+  if (!insightRef.current) return;
+  gsap.from(insightRef.current, { opacity: 0, y: 20, duration: 0.4, ease: "back.out(1.4)" });
+}, { dependencies: [!!analytics], revertOnUpdate: false });
+
+// CSS micro-interaction (trip panel expand)
+// .panel-slide-in class: slide-down-fade keyframe, 22ms ease-out, will-change: transform opacity
+// Halted by prefers-reduced-motion media query in globals.css
+```
+
+---
+
+### Props added to PlannerPanel
+
+```tsx
+onReRouteFromTrip?: (label: string) => void;
+```
+
+### Handler in `dashboard/page.tsx`
+
+```tsx
+const handleReRouteFromTrip = (label: string) => {
+  sessionStorage.setItem("transync_dashboard_route", JSON.stringify({
+    destination: label, destinationCoords: null, travelMode, waypoints: waypointInputs,
+  }));
+  router.push("/map");
+};
+```
+
+---
+
+## 25. DEPLOYMENT — NEXT STEPS (planned)
+
 
 **Frontend → Vercel**
 - Push `transync-gps` to GitHub
@@ -911,7 +1081,7 @@ Toast auto-hides after 4.5s via `toastTimerRef`. Previous timer is cleared on ea
 
 ---
 
-## 25. WHAT IS NOT YET BUILT
+## 26. WHAT IS NOT YET BUILT
 
 - PWA PNG icons (192×192, 512×512) — needed for iOS install prompt
 - Distinct ETAs for private vs public transport (jeepney mode)
@@ -927,7 +1097,7 @@ Toast auto-hides after 4.5s via `toastTimerRef`. Previous timer is cleared on ea
 
 ---
 
-## 26. THESIS / RESEARCH FRAMING
+## 27. THESIS / RESEARCH FRAMING
 
 - **Problem:** Existing navigation tools don't provide separate ETAs for private vs public vehicles, no localized delay formulas for Lipa City conditions, no unified commuter advisory platform
 - **Solution framing:** Hybrid navigation architecture — deterministic geospatial APIs (Google Maps) + AI-driven interpretive advisory layer (Claude) + real-time weather integration
@@ -936,7 +1106,7 @@ Toast auto-hides after 4.5s via `toastTimerRef`. Previous timer is cleared on ea
 
 ---
 
-## 27. CODING PREFERENCES
+## 28. CODING PREFERENCES
 
 - **Always provide full updated files** — never partial snippets that require manual merging
 - **Mobile-first** — all UI decisions default to mobile viewport

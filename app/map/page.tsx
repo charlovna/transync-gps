@@ -600,6 +600,7 @@ export default function MapPage() {
           gyroEnabled={gyroEnabled} recenterRequest={recenterRequest}
           isLoaded={isLoaded} userPos={currentPosition}
           zoomRequest={zoomRequest} selectedRouteIndex={selectedRouteIndex}
+          onSelectAlternative={handleSelectAlternative}
         />
       </div>
       <div className="pointer-events-none absolute inset-0 bg-slate-950/10" />

@@ -205,6 +205,16 @@ export default function Dashboard() {
     router.push("/map");
   };
 
+  const handleReRouteFromTrip = (label: string) => {
+    sessionStorage.setItem("transync_dashboard_route", JSON.stringify({
+      destination: label,
+      destinationCoords: null,
+      travelMode,
+      waypoints: waypointInputs,
+    }));
+    router.push("/map");
+  };
+
   const handleSignOut = () => {
     localStorage.removeItem("transync_token"); localStorage.removeItem("transync_user");
     sessionStorage.removeItem("transync_token"); sessionStorage.removeItem("transync_user");
@@ -289,6 +299,7 @@ export default function Dashboard() {
           isLoaded={isLoaded}
           authChecked={authChecked}
           onNearestEventChange={() => { /* nearest event is resolved on the map page */ }}
+          onReRouteFromTrip={handleReRouteFromTrip}
         />
       </div>
 
