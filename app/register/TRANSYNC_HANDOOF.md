@@ -847,46 +847,74 @@ const handleSelectAlternative = (index: number) => {
 
 ---
 
-### PART 3 — Dynamic Re-evaluation
+### PART 3 — Adaptive Route Re-evaluation (60 s)
 
-Every 3 minutes while a trip is active, the route is re-fetched from current position. If ETA changes ≥5 min or risk worsens, `routeData` is updated and a slide-up toast fires.
+Every **60 seconds** while a trip is active, the route is re-fetched from current GPS position. Three independent triggers can fire:
 
-**Stale-closure pattern (critical for intervals):**
+| Trigger | Condition | Action |
+|---|---|---|
+| Faster alt route | Any `routes[]` entry is ≥3 min faster than current ETA | Show **Adaptive Suggestion Banner** (Apply / Dismiss) |
+| ETA drift | Primary route ETA grew ≥10% vs when trip started | Update `routeData` + toast |
+| Risk / weather | Risk level worsens OR advisory text contains "rain/storm/wet road" | Update `routeData` + toast |
+
+**Stale-closure pattern (unchanged — critical for intervals):**
 ```tsx
-// Always-fresh ref — updated on every render (no re-render cost)
+// Always-fresh ref — updated on every render
 const reEvalDataRef = useRef({ currentPosition, routeData, backendUrl });
-useEffect(() => {
-  reEvalDataRef.current = { currentPosition, routeData, backendUrl };
-});
+useEffect(() => { reEvalDataRef.current = { currentPosition, routeData, backendUrl }; });
 
-// Interval only restarts when tripStarted changes
+// Interval restarts only when tripStarted changes
 useEffect(() => {
   if (!tripStarted) { clearInterval(reEvalIntervalRef.current); return; }
   reEvalIntervalRef.current = window.setInterval(async () => {
     const { currentPosition: pos, routeData: rd, backendUrl: url } = reEvalDataRef.current;
-    // ... fetch /route, compare, setRouteData, showToast ...
-  }, 180000); // 3 minutes
+    if (adaptiveSuggestionActiveRef.current) return; // skip if banner already visible
+    // ... fetch /route with rd.travel_mode, compare routes[], setAdaptiveSuggestion or showToast ...
+  }, 60000);
   return () => clearInterval(reEvalIntervalRef.current);
 }, [tripStarted]);
 ```
 
-**Toast component (inline in page.tsx):**
+**`AdaptiveSuggestion` type (`lib/types.ts`):**
+```ts
+export type AdaptiveSuggestion = {
+  reason: "faster_route" | "eta_drift" | "risk_worsened" | "weather";
+  altRouteIndex: number;       // index into freshRoutes[]
+  timeSaving: number | null;   // minutes saved (positive)
+  newEta: number | null;
+  newRisk: RiskLevel | null;
+  routeSummary: string | null;
+  message: string;
+  freshRoutes: AlternativeRoute[];
+};
+```
+
+**State & refs (`page.tsx`):**
+```tsx
+const [adaptiveSuggestion, setAdaptiveSuggestion] = useState<AdaptiveSuggestion | null>(null);
+const adaptiveSuggestionActiveRef = useRef(false); // blocks re-eval spam while banner is showing
+```
+
+**Adaptive Suggestion Banner (fixed top-center, `zIndex: 85`):**
+- `panel-slide-in` entrance animation
+- Header: "⚡ Better Route Detected" + route message + new risk badge
+- Two stat chips: New ETA (Orbitron) + Time Saved (green, ↓ delta)
+- Two action buttons: **Apply Route** (gradient) → calls `handleApplyAdaptive` | **Dismiss** → calls `handleDismissAdaptive`
+- `handleApplyAdaptive` applies `freshRoutes[altRouteIndex]` to `routeData`, resets flag, fires confirmation toast
+- Banner + flag cleared on: Apply, Dismiss, trip end (`setAdaptiveSuggestion(null)` in tripStarted = false branch), or new `handleGetRoute` call
+
+**Toast (unchanged — fires for ETA drift / risk worsened):**
 ```tsx
 <div style={{
   position: "fixed", bottom: 90, left: "50%",
   transform: `translateX(-50%) translateY(${toastVisible ? "0" : "20px"})`,
   opacity: toastVisible ? 1 : 0, pointerEvents: "none",
   transition: "opacity 0.3s ease, transform 0.3s ease",
-  // dark glass panel, zIndex: 80
 }}>
   <p>{toastMessage}</p>
 </div>
 ```
-Toast auto-hides after 4.5s via `toastTimerRef`. Previous timer is cleared on each new toast call.
-
-**Significance thresholds:**
-- ETA change ≥ 5 minutes (absolute)
-- Risk level worsens: Low→Medium, Low→High, or Medium→High
+Toast auto-hides after 4.5s via `toastTimerRef`.
 
 ---
 
@@ -937,6 +965,9 @@ Toast auto-hides after 4.5s via `toastTimerRef`. Previous timer is cleared on ea
 | Login/register redirected to `/` (map page) | Now redirect to `/dashboard`; dashboard hands off route params via `sessionStorage("transync_dashboard_route")` |
 | Trip history items flat / not actionable | Items are now expandable — tap to reveal per-trip stats, benchmark comparison vs user average, AI tip, and "Find Best Route Today →" CTA |
 | No benchmark comparison per trip | `etaDelta = analytics.avgEta − trip.eta_minutes` (↓ green = faster, ↑ amber = slower); `distDelta = trip.distance_km − avgDist` — both shown in "vs. Your Average" micrograph |
+| Re-eval every 3 min, no apply button, toast only | Interval cut to 60 s; 3 independent triggers (faster alt, ETA drift ≥10%, risk/weather); faster-route trigger shows Adaptive Suggestion Banner with Apply/Dismiss instead of toast |
+| Re-eval always sent mode:"driving" regardless of travelMode | Now sends `rd.travel_mode \|\| "driving"` — respects bicycling / walking mode for re-eval |
+| No passive alert for dashboard users | Dashboard fires one `/route` check against last trip destination on GPS fix; shows Route Alert card (green = better window, amber/red = heavier traffic) with "Navigate Now →" |
 | No animated entrance on Synced Insight card | `useGSAP` with `{ opacity:0, y:20, duration:0.4, ease:"back.out(1.4)" }` fires once when `analytics` becomes truthy; `revertOnUpdate: false` prevents re-fire on re-render |
 | Trip expand panel appears abruptly | `.panel-slide-in` CSS class: `slide-down-fade` keyframe (opacity 0→1 + translateY -6→0, 22ms ease-out), halted by `prefers-reduced-motion` |
 | Risk badges have no visual weight | `.badge-low / .badge-medium / .badge-high` glow classes added to globals.css; applied to all risk badge spans in trip history items |
@@ -1046,7 +1077,92 @@ const handleReRouteFromTrip = (label: string) => {
 
 ---
 
-## 25. DEPLOYMENT — NEXT STEPS (planned)
+## 25. DASHBOARD ROUTE ALERT
+
+**Files:** `app/dashboard/page.tsx`
+**Purpose:** Passively notify users when conditions have changed vs their last recorded trip — while they are idle on the dashboard.
+
+### Trigger logic
+
+Fires **once** per dashboard session, when all three are ready: `currentPosition`, `authChecked`, and `tripHistory.length > 0`. Guarded by `routeAlertCheckedRef`.
+
+Calls `POST /route` with current GPS coords as origin and `tripHistory[0].destination_label` as destination, `mode: "driving"`.
+
+| Condition | Alert type | Card colour |
+|---|---|---|
+| `currentRisk < storedRisk` OR `timeSaving ≥ 3 min` | `"better"` | Green gradient |
+| `currentRisk > storedRisk` | `"worse"` | Amber/red gradient |
+| No change | No alert shown | — |
+
+### `RouteAlert` type (inline in `dashboard/page.tsx`)
+
+```ts
+type RouteAlert = {
+  destination_label: string;
+  type: "better" | "worse";
+  currentRisk: RiskLevel;
+  storedRisk: RiskLevel;
+  timeSaving: number | null;
+  currentEta: number | null;
+  message: string;
+};
+```
+
+### Card UI
+
+Rendered above `<PlannerPanel>` inside the dashboard content scroll area using the `.panel-slide-in` animation.
+
+- Header: alert icon (✅ or ⚠️) + type label + message
+- Stat chips: Time Saved (green, if applicable) · Current ETA · Risk Now (colour-coded)
+- **"Navigate Now →"** button → calls `handleReRouteFromTrip(destination_label)` → navigates to `/map` with pre-filled destination
+- **×** dismiss button → `setRouteAlert(null)`
+
+---
+
+## 26. DEMO SHORTCUT BUTTON
+
+**File:** `app/map/page.tsx`
+**Purpose:** Allows a live demo presenter to instantly trigger the Arrival screen without physically travelling to the destination.
+
+### How it works
+
+A `const DEMO_MODE = true` flag sits at the **module level** (just above `export default function MapPage()`). The button renders only when `DEMO_MODE && tripStarted`.
+
+Clicking the button calls `handleDemoArrive()`, which runs identical logic to the GPS proximity detector:
+
+```tsx
+const handleDemoArrive = () => {
+  if (arrivalTriggeredRef.current || !tripStarted) return;
+  arrivalTriggeredRef.current = true;
+  const elapsed = Math.max(1, Math.round((Date.now() - tripStartTimeRef.current) / 60000));
+  let accuracy = 88;
+  if (weatherData) accuracy += 5;
+  if (routeData?.risk_level === "Low")  accuracy += 3;
+  if (routeData?.risk_level === "High") accuracy -= 6;
+  setTripDurationMinutes(elapsed);
+  setArrivalAccuracy(Math.min(99, Math.max(75, accuracy)));
+  setArrivalRating(0); setArrivalFeedback(""); setFeedbackSubmitted(false);
+  setShowArrival(true); setTripStarted(false);
+  if (activeTripId) { endTripBackend(activeTripId); setActiveTripId(null); }
+  fetchTripHistory();
+};
+```
+
+This means the Arrival overlay, trip duration, accuracy score, star rating, and backend trip-end call all work exactly as in a real trip.
+
+### Button appearance
+
+Fixed top-right (`top: 16, right: 16`, `zIndex: 90`). Purple-tinted glass pill with "⚑ DEMO: ARRIVE" label. Does not appear when `!tripStarted`.
+
+### How to remove before production
+
+**Option A (recommended):** Set `DEMO_MODE = false` — button disappears, handler is dead code, zero runtime cost.
+
+**Option B (clean):** Delete the `DEMO_MODE` constant, `handleDemoArrive` function, and the JSX block marked `{/* ══ DEMO — ARRIVAL SHORTCUT ══ */}`.
+
+---
+
+## 27. DEPLOYMENT — NEXT STEPS (planned)
 
 
 **Frontend → Vercel**
@@ -1081,7 +1197,7 @@ const handleReRouteFromTrip = (label: string) => {
 
 ---
 
-## 26. WHAT IS NOT YET BUILT
+## 28. WHAT IS NOT YET BUILT
 
 - PWA PNG icons (192×192, 512×512) — needed for iOS install prompt
 - Distinct ETAs for private vs public transport (jeepney mode)
@@ -1092,21 +1208,21 @@ const handleReRouteFromTrip = (label: string) => {
 - PWA service worker / offline support
 - Arrival feedback persistence (currently local state only — not saved to backend)
 - Manual starting point override for desktop testing
-- Re-evaluation toast does not update alternative route chips (only top-level routeData updates)
+- Demo shortcut button (`DEMO_MODE = true`) must be set to `false` (or removed) before production handoff — see §26
 - Light mode (deliberately deferred — inline styles throughout require CSS variable refactor)
 
 ---
 
-## 27. THESIS / RESEARCH FRAMING
+## 29. THESIS / RESEARCH FRAMING
 
 - **Problem:** Existing navigation tools don't provide separate ETAs for private vs public vehicles, no localized delay formulas for Lipa City conditions, no unified commuter advisory platform
 - **Solution framing:** Hybrid navigation architecture — deterministic geospatial APIs (Google Maps) + AI-driven interpretive advisory layer (Claude) + real-time weather integration
 - **Geographic context:** Lipa City, Batangas; students and daily commuters; De La Salle Lipa area
-- **Key differentiators over standard Google Maps:** traffic + weather synthesis, AI-generated commuter advisories, dynamic ETA updates, multi-stop routing, alternative route comparison chips, live traffic layer overlay, adaptive route re-evaluation every 3 minutes during trips, transport-mode-specific ETAs (planned)
+- **Key differentiators over standard Google Maps:** traffic + weather synthesis, AI-generated commuter advisories, dynamic ETA updates, multi-stop routing, alternative route comparison chips, live traffic layer overlay, adaptive route re-evaluation every **60 seconds** during trips (with Apply/Dismiss banner for faster alternatives), dashboard passive Route Alert (conditions vs last trip), transport-mode-specific ETAs (planned)
 
 ---
 
-## 28. CODING PREFERENCES
+## 30. CODING PREFERENCES
 
 - **Always provide full updated files** — never partial snippets that require manual merging
 - **Mobile-first** — all UI decisions default to mobile viewport

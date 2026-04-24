@@ -251,12 +251,48 @@ export default function PlannerPanel({
     );
   }, { dependencies: [!!analytics], revertOnUpdate: false });
 
+  // ── Weather widget computed vars ─────────────────────────────────────────
+  const weatherBg = (() => {
+    if (!weatherData) return "rgba(2,6,23,0.88)";
+    const t   = weatherData.temperature;
+    const lbl = weatherData.condition.label.toLowerCase();
+    if (lbl.includes("storm") || lbl.includes("thunder"))
+      return "linear-gradient(135deg,#06091e 0%,#16043a 60%,#0f172a 100%)";
+    if (weatherData.precipitation > 3 || lbl.includes("rain"))
+      return "linear-gradient(135deg,#05112e 0%,#0a1e4a 60%,#0f172a 100%)";
+    if (t >= 36)
+      return "linear-gradient(135deg,#280500 0%,#4e1000 60%,#0f172a 100%)";
+    if (t >= 30)
+      return "linear-gradient(135deg,#1a0900 0%,#361400 60%,#0f172a 100%)";
+    if (t <= 18)
+      return "linear-gradient(135deg,#04122a 0%,#0b1e3e 60%,#0f172a 100%)";
+    return "linear-gradient(135deg,#041018 0%,#0b1c28 60%,#0f172a 100%)";
+  })();
+
+  const weatherTempPct = weatherData
+    ? Math.min(100, Math.max(0, ((weatherData.temperature - 10) / 30) * 100))
+    : 0;
+
+  const weatherImpact = (() => {
+    if (!weatherData) return null;
+    const lbl = weatherData.condition.label.toLowerCase();
+    if (lbl.includes("storm") || lbl.includes("thunder"))
+      return { icon: "⚡", label: "High Risk", color: "#ef4444", isAdverse: true };
+    if (weatherData.precipitation > 5 || lbl.includes("heavy"))
+      return { icon: "🌧", label: "Adjusted", color: "#f59e0b", isAdverse: true };
+    if (weatherData.precipitation > 0 || lbl.includes("rain") || lbl.includes("drizzle"))
+      return { icon: "🌦", label: "Monitor",  color: "#fbbf24", isAdverse: true };
+    if (weatherData.wind_speed > 30)
+      return { icon: "💨", label: "Windy",    color: "#f59e0b", isAdverse: true };
+    return { icon: "✓", label: "Optimal", color: "#10b981", isAdverse: false };
+  })();
+
   const destWrapStyle: React.CSSProperties = destFocused
     ? { borderRadius: 16, padding: "12px 14px", border: "1px solid rgba(56,189,248,0.6)", background: "rgba(15,23,42,0.9)", boxShadow: "0 0 0 3px rgba(56,189,248,0.1), inset -2px -2px 6px rgba(255,255,255,0.04), inset 2px 2px 8px rgba(0,0,0,0.5)", transition: "border-color 0.2s ease, box-shadow 0.2s ease" }
     : { borderRadius: 16, padding: "12px 14px", border: "1px solid rgba(251,146,60,0.3)", background: "rgba(15,23,42,0.9)", boxShadow: "inset -2px -2px 6px rgba(255,255,255,0.04), inset 2px 2px 8px rgba(0,0,0,0.5)", transition: "border-color 0.2s ease, box-shadow 0.2s ease" };
 
   return (
-    <div className="w-full max-w-[520px] mx-auto space-y-4">
+    <div className="w-full max-w-[520px] mx-auto space-y-4" style={{ overflowX: "hidden" }}>
 
       {/* ── Header ── */}
       <div style={{ borderRadius: 24, padding: "18px 20px", border: "1px solid rgba(34,211,238,0.1)", background: "linear-gradient(135deg,rgba(8,47,73,0.88),rgba(15,23,42,0.94),rgba(30,27,75,0.88))", backdropFilter: "blur(20px)", boxShadow: "0 20px 40px rgba(0,0,0,0.4)" }}>
@@ -444,28 +480,66 @@ export default function PlannerPanel({
         )}
       </div>
 
-      {/* ── Weather ── */}
-      <div style={{ borderRadius: 24, padding: "16px 20px", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.88)", backdropFilter: "blur(20px)", boxShadow: "0 16px 32px rgba(0,0,0,0.3)" }}>
-        <p style={{ fontSize: 11, fontWeight: 600, color: "#475569", textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 10 }}>Current Weather · Lipa City</p>
+      {/* ── Weather Widget ── */}
+      <div style={{ borderRadius: 24, padding: "20px", border: "1px solid rgba(255,255,255,0.08)", background: weatherBg, backdropFilter: "blur(20px)", boxShadow: "0 16px 40px rgba(0,0,0,0.45)", overflow: "hidden" }}>
+        <p style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.16em", marginBottom: 14 }}>Current Weather · Lipa City</p>
+
         {weatherLoading ? (
           <p style={{ fontSize: 13, color: "#475569" }}>Detecting conditions...</p>
         ) : weatherData ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <span aria-hidden="true" style={{ fontSize: 40, lineHeight: 1, flexShrink: 0 }}>{weatherData.condition.icon}</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                <span className="font-orbitron" style={{ fontSize: 28, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>{weatherData.temperature}°C</span>
-                <span style={{ fontSize: 12, color: "#64748b" }}>Feels {weatherData.feels_like}°C</span>
+          <>
+            {/* Hero row */}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span aria-hidden="true" style={{ fontSize: 54, lineHeight: 1, flexShrink: 0 }}>{weatherData.condition.icon}</span>
+                <div>
+                  <p className="font-orbitron" style={{ fontSize: 46, fontWeight: 900, color: "#f8fafc", lineHeight: 1, letterSpacing: "-0.03em" }}>
+                    {weatherData.temperature}°
+                  </p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.55)", marginTop: 3 }}>{weatherData.condition.label}</p>
+                </div>
               </div>
-              <p style={{ fontSize: 14, fontWeight: 600, color: "#94a3b8", marginTop: 3 }}>{weatherData.condition.label}</p>
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <p style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em" }}>Feels like</p>
+                <p className="font-orbitron" style={{ fontSize: 22, fontWeight: 800, color: "rgba(255,255,255,0.7)", marginTop: 4 }}>{weatherData.feels_like}°</p>
+              </div>
             </div>
-            <div style={{ textAlign: "right", flexShrink: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-              <span style={{ fontSize: 12, color: "#64748b" }}>💨 {weatherData.wind_speed} km/h</span>
-              {weatherData.precipitation > 0 && (
-                <span style={{ fontSize: 12, color: "#7dd3fc" }}>🌧 {weatherData.precipitation}mm</span>
+
+            {/* Stat chips */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <div style={{ flex: 1, borderRadius: 12, padding: "9px 8px", background: "rgba(0,0,0,0.28)", border: "1px solid rgba(255,255,255,0.07)", textAlign: "center" }}>
+                <p style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Precip</p>
+                <p style={{ fontSize: 13, fontWeight: 700, color: weatherData.precipitation > 0 ? "#7dd3fc" : "rgba(255,255,255,0.65)" }}>
+                  {weatherData.precipitation > 0 ? `${weatherData.precipitation}mm` : "None"}
+                </p>
+              </div>
+              <div style={{ flex: 1, borderRadius: 12, padding: "9px 8px", background: "rgba(0,0,0,0.28)", border: "1px solid rgba(255,255,255,0.07)", textAlign: "center" }}>
+                <p style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Wind</p>
+                <p style={{ fontSize: 13, fontWeight: 700, color: weatherData.wind_speed > 25 ? "#fbbf24" : "rgba(255,255,255,0.65)" }}>
+                  {weatherData.wind_speed} km/h
+                </p>
+              </div>
+              {weatherImpact && (
+                <div style={{ flex: 1, borderRadius: 12, padding: "9px 8px", background: "rgba(0,0,0,0.28)", border: `1px solid ${weatherImpact.color}44`, textAlign: "center" }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Routing</p>
+                  <p style={{ fontSize: 13, fontWeight: 700, color: weatherImpact.color }}>
+                    {weatherImpact.icon} {weatherImpact.label}
+                  </p>
+                </div>
               )}
             </div>
-          </div>
+
+            {/* Temperature scale bar */}
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                <span style={{ fontSize: 9, fontWeight: 600, color: "rgba(255,255,255,0.25)" }}>10°C</span>
+                <span style={{ fontSize: 9, fontWeight: 600, color: "rgba(255,255,255,0.25)" }}>40°C</span>
+              </div>
+              <div style={{ position: "relative", height: 5, borderRadius: 99, background: "linear-gradient(to right,#3b82f6,#06b6d4,#10b981,#f59e0b,#ef4444)" }}>
+                <div style={{ position: "absolute", top: "50%", left: `${weatherTempPct}%`, transform: "translate(-50%,-50%)", width: 13, height: 13, borderRadius: "50%", background: "#fff", boxShadow: "0 0 8px rgba(255,255,255,0.9)", border: "2px solid rgba(0,0,0,0.25)" }} />
+              </div>
+            </div>
+          </>
         ) : (
           <p style={{ fontSize: 13, color: "#475569" }}>
             {currentPosition ? "Weather unavailable" : "Waiting for GPS to load weather..."}
@@ -683,7 +757,7 @@ export default function PlannerPanel({
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
 
             {/* Risk Profile */}
-            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)", minWidth: 0 }}>
               <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 9 }}>Risk Profile</p>
               <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                 {[
@@ -703,7 +777,7 @@ export default function PlannerPanel({
             </div>
 
             {/* Avg ETA */}
-            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)", minWidth: 0 }}>
               <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Avg ETA</p>
               <p className="font-orbitron" style={{ fontSize: 26, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>
                 {analytics.avgEta ?? "—"}
@@ -713,7 +787,7 @@ export default function PlannerPanel({
             </div>
 
             {/* Total Distance */}
-            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)", minWidth: 0 }}>
               <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Total Distance</p>
               <p className="font-orbitron" style={{ fontSize: 26, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>
                 {analytics.totalDist ?? "—"}
@@ -723,7 +797,7 @@ export default function PlannerPanel({
             </div>
 
             {/* Top Route */}
-            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)", minWidth: 0 }}>
               <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Top Route</p>
               <p style={{ fontSize: 13, fontWeight: 700, color: "#f1f5f9", lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {analytics.topDest?.label ?? "—"}
@@ -733,29 +807,26 @@ export default function PlannerPanel({
               )}
             </div>
 
-            {/* Weather Analytics — full width */}
-            {weatherData && (
-              <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.06)", gridColumn: "1 / -1" }}>
-                <p style={{ fontSize: 10, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 9 }}>Weather Analytics</p>
+            {/* Weather Impact — full width */}
+            {weatherData && weatherImpact && (
+              <div className="neu-extruded" style={{ borderRadius: 14, padding: "12px 13px", background: weatherBg, border: "1px solid rgba(255,255,255,0.07)", gridColumn: "1 / -1", minWidth: 0 }}>
+                <p style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 9 }}>Weather Impact</p>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span aria-hidden="true" style={{ fontSize: 32, lineHeight: 1, flexShrink: 0 }}>{weatherData.condition.icon}</span>
+                  <span aria-hidden="true" style={{ fontSize: 30, lineHeight: 1, flexShrink: 0 }}>{weatherData.condition.icon}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
-                      <span className="font-orbitron" style={{ fontSize: 20, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>{weatherData.temperature}°C</span>
-                      <span style={{ fontSize: 12, color: "#94a3b8" }}>{weatherData.condition.label}</span>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span className="font-orbitron" style={{ fontSize: 19, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>{weatherData.temperature}°C</span>
+                      <span style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{weatherData.condition.label}</span>
                     </div>
-                    <p style={{ fontSize: 11, marginTop: 5, fontWeight: 600, color: weatherData.precipitation > 0 ? "#f59e0b" : "#10b981" }}>
-                      {weatherData.precipitation > 0
-                        ? `🌧 ${weatherData.precipitation}mm rain · Risk weights elevated`
-                        : "✓ Clear conditions · Optimal routing active"}
+                    <p style={{ fontSize: 11, marginTop: 5, fontWeight: 600, color: weatherImpact.color }}>
+                      {weatherImpact.icon} {weatherImpact.isAdverse ? `${weatherImpact.label} · Route adjusted for conditions` : "Optimal routing active"}
                     </p>
-                    {weatherData.wind_speed > 25 && (
-                      <p style={{ fontSize: 11, color: "#f87171", marginTop: 3 }}>💨 Strong wind {weatherData.wind_speed}km/h · Buffer ETA by ~5 min</p>
-                    )}
                   </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <p style={{ fontSize: 11, color: "#475569" }}>Feels {weatherData.feels_like}°C</p>
-                    <p style={{ fontSize: 11, color: "#64748b", marginTop: 3 }}>💨 {weatherData.wind_speed} km/h</p>
+                  <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+                    <div style={{ position: "relative", height: 4, width: 56, borderRadius: 99, background: "linear-gradient(to right,#3b82f6,#06b6d4,#10b981,#f59e0b,#ef4444)" }}>
+                      <div style={{ position: "absolute", top: "50%", left: `${weatherTempPct}%`, transform: "translate(-50%,-50%)", width: 8, height: 8, borderRadius: "50%", background: "#fff", boxShadow: "0 0 5px rgba(255,255,255,0.8)" }} />
+                    </div>
+                    <p style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>feels {weatherData.feels_like}°C</p>
                   </div>
                 </div>
               </div>

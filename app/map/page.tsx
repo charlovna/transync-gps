@@ -9,7 +9,7 @@ import AdvisoryPanel from "../components/AdvisoryPanel";
 import NavigationHUD from "../components/NavigationHUD";
 import ArrivalOverlay from "../components/ArrivalOverlay";
 import ProfileSheet from "../components/ProfileSheet";
-import type { LatLng, RouteData, WeatherData, RecentSearch, TripRecord, ProfileData, RiskBadge, WaypointStop, LocalEvent } from "../lib/types";
+import type { LatLng, RouteData, WeatherData, RecentSearch, TripRecord, ProfileData, RiskBadge, WaypointStop, LocalEvent, AdaptiveSuggestion } from "../lib/types";
 
 const GOOGLE_MAPS_LIBRARIES: ("places" | "geometry" | "drawing")[] = ["places"];
 
@@ -34,6 +34,9 @@ function riskBadgeFor(level?: string): RiskBadge {
     default:       return { bg: "#475569", text: "#fff" };
   }
 }
+
+// ── DEMO MODE — flip to false (or delete flag + JSX block) before production ──
+const DEMO_MODE = true;
 
 export default function MapPage() {
   const router = useRouter();
@@ -143,7 +146,9 @@ export default function MapPage() {
   const [toastVisible, setToastVisible]             = useState(false);
   const reEvalIntervalRef = useRef<number | null>(null);
   const toastTimerRef     = useRef<number | null>(null);
-  const reEvalDataRef     = useRef<{ currentPosition: LatLng | null; routeData: RouteData | null; backendUrl: string }>({ currentPosition: null, routeData: null, backendUrl: "" });
+  const reEvalDataRef           = useRef<{ currentPosition: LatLng | null; routeData: RouteData | null; backendUrl: string }>({ currentPosition: null, routeData: null, backendUrl: "" });
+  const [adaptiveSuggestion, setAdaptiveSuggestion] = useState<AdaptiveSuggestion | null>(null);
+  const adaptiveSuggestionActiveRef                 = useRef(false);
 
   // ── Dashboard route handoff ────────────────────────────────────────────────
   const hasDashboardRouteRef = useRef(false);
@@ -368,35 +373,82 @@ export default function MapPage() {
     toastTimerRef.current = window.setTimeout(() => setToastVisible(false), 4500);
   };
 
-  // ── Route re-evaluation ───────────────────────────────────────────────────
+  // ── Adaptive route re-evaluation (60 s) ──────────────────────────────────
   useEffect(() => {
     if (!tripStarted) {
       if (reEvalIntervalRef.current) { window.clearInterval(reEvalIntervalRef.current); reEvalIntervalRef.current = null; }
+      setAdaptiveSuggestion(null);
+      adaptiveSuggestionActiveRef.current = false;
       return;
     }
     reEvalIntervalRef.current = window.setInterval(async () => {
       const { currentPosition: pos, routeData: rd, backendUrl: url } = reEvalDataRef.current;
       if (!pos || !rd?.destination_label || !url) return;
+      // Skip re-eval while a suggestion card is already visible
+      if (adaptiveSuggestionActiveRef.current) return;
       try {
         const r = await fetch(`${url}/route`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
-          body: JSON.stringify({ origin: `${pos.lat},${pos.lng}`, destination: rd.destination_label, mode: "driving" }),
+          body: JSON.stringify({
+            origin: `${pos.lat},${pos.lng}`,
+            destination: rd.destination_label,
+            mode: rd.travel_mode || "driving",
+          }),
         });
         const data = await r.json();
-        if (!r.ok) return;
-        const etaDiff    = (data.eta_minutes ?? 0) - (rd.eta_minutes ?? 0);
-        const riskLevels = ["Low", "Medium", "High"];
-        const riskWorsened = riskLevels.indexOf(data.risk_level) > riskLevels.indexOf(rd.risk_level ?? "Low");
-        if (Math.abs(etaDiff) >= 5 || riskWorsened) {
-          setRouteData((prev) => prev ? { ...prev, ...data } : prev);
-          const msg = riskWorsened
-            ? `Traffic risk increased to ${data.risk_level} — ETA now ${data.eta_minutes} min`
-            : `Route updated — ETA ${etaDiff > 0 ? "+" : ""}${etaDiff} min (${data.eta_minutes} min remaining)`;
+        if (!r.ok || !data.routes?.length) return;
+
+        const currentEta  = rd.eta_minutes ?? 0;
+        const riskLevels  = ["Low", "Medium", "High"] as const;
+        const freshRoutes = data.routes as AdaptiveSuggestion["freshRoutes"];
+
+        // ── Trigger 1: faster alternative route ──────────────────────────────
+        let bestAltIdx = -1, bestSaving = 2; // threshold > 2 = ≥ 3 min
+        for (let i = 0; i < freshRoutes.length; i++) {
+          const saving = currentEta - (freshRoutes[i].eta_minutes ?? currentEta);
+          if (saving > bestSaving) { bestSaving = saving; bestAltIdx = i; }
+        }
+        if (bestAltIdx >= 0) {
+          const alt = freshRoutes[bestAltIdx];
+          adaptiveSuggestionActiveRef.current = true;
+          setAdaptiveSuggestion({
+            reason: "faster_route",
+            altRouteIndex: bestAltIdx,
+            timeSaving: bestSaving,
+            newEta: alt.eta_minutes,
+            newRisk: alt.risk_level,
+            routeSummary: alt.route_summary,
+            message: `Via ${alt.route_summary || "alternate route"} · saves ${bestSaving} min`,
+            freshRoutes,
+          });
+          return;
+        }
+
+        // ── Trigger 2: weather turns adverse (risk bump from backend) ─────────
+        const isAdverseWeather = data.advisory_text
+          ? /rain|storm|thunder|wet road/i.test(data.advisory_text) : false;
+
+        // ── Trigger 3: risk worsened ──────────────────────────────────────────
+        const riskWorsened =
+          riskLevels.indexOf(data.risk_level) > riskLevels.indexOf(rd.risk_level ?? "Low");
+
+        // ── Trigger 4: ETA drifts ≥10% ────────────────────────────────────────
+        const newPrimaryEta = data.eta_minutes ?? currentEta;
+        const etaDrifted    = currentEta > 0 && (newPrimaryEta - currentEta) / currentEta >= 0.10;
+
+        if (riskWorsened || etaDrifted || isAdverseWeather) {
+          setRouteData((prev) => prev ? { ...prev, ...data, routes: freshRoutes } : prev);
+          const etaDiffMin = Math.round(newPrimaryEta - currentEta);
+          const msg = isAdverseWeather && riskWorsened
+            ? `🌧 Weather worsened — risk is now ${data.risk_level} · ETA ${data.eta_minutes} min`
+            : riskWorsened
+            ? `⚠ Traffic risk increased to ${data.risk_level} · ETA ${data.eta_minutes} min`
+            : `ETA extended +${etaDiffMin} min — traffic building ahead`;
           showToast(msg);
         }
       } catch { /* non-fatal */ }
-    }, 180000);
+    }, 60000);
     return () => { if (reEvalIntervalRef.current) { window.clearInterval(reEvalIntervalRef.current); reEvalIntervalRef.current = null; } };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripStarted]);
@@ -496,11 +548,55 @@ export default function MapPage() {
     } : prev);
   };
 
+  // ── Adaptive suggestion apply / dismiss ──────────────────────────────────
+  const handleApplyAdaptive = () => {
+    if (!adaptiveSuggestion) return;
+    const alt = adaptiveSuggestion.freshRoutes[adaptiveSuggestion.altRouteIndex];
+    if (!alt) return;
+    setSelectedRouteIndex(adaptiveSuggestion.altRouteIndex);
+    setRouteData((prev) => prev ? {
+      ...prev,
+      polyline:                 alt.polyline,
+      eta_minutes:              alt.eta_minutes,
+      risk_level:               alt.risk_level,
+      route_summary:            alt.route_summary,
+      distance_km:              alt.distance_km,
+      duration_minutes_base:    alt.duration_minutes_base,
+      duration_minutes_traffic: alt.duration_minutes_traffic,
+      routes:                   adaptiveSuggestion.freshRoutes,
+    } : prev);
+    setAdaptiveSuggestion(null);
+    adaptiveSuggestionActiveRef.current = false;
+    showToast(`✓ Switched to ${alt.route_summary || "alternate route"}`);
+  };
+
+  const handleDismissAdaptive = () => {
+    setAdaptiveSuggestion(null);
+    adaptiveSuggestionActiveRef.current = false;
+  };
+
+  // ── DEMO: instant arrival trigger (DEMO_MODE only) ────────────────────────
+  const handleDemoArrive = () => {
+    if (arrivalTriggeredRef.current || !tripStarted) return;
+    arrivalTriggeredRef.current = true;
+    const elapsed = Math.max(1, Math.round((Date.now() - tripStartTimeRef.current) / 60000));
+    let accuracy = 88;
+    if (weatherData) accuracy += 5;
+    if (routeData?.risk_level === "Low")  accuracy += 3;
+    if (routeData?.risk_level === "High") accuracy -= 6;
+    setTripDurationMinutes(elapsed);
+    setArrivalAccuracy(Math.min(99, Math.max(75, accuracy)));
+    setArrivalRating(0); setArrivalFeedback(""); setFeedbackSubmitted(false);
+    setShowArrival(true); setTripStarted(false);
+    if (activeTripId) { endTripBackend(activeTripId); setActiveTripId(null); }
+    fetchTripHistory();
+  };
+
   // ── Handlers ──────────────────────────────────────────────────────────────
   const handleGetRoute = async () => {
     setError(""); setRouteData(null); setAiInsight(""); setAiInsightLoading(false);
-    setSelectedRouteIndex(0);
-    aiInsightFetchedRef.current = false;
+    setSelectedRouteIndex(0); setAdaptiveSuggestion(null);
+    aiInsightFetchedRef.current = false; adaptiveSuggestionActiveRef.current = false;
     if (!destination.trim()) { setError("Destination is required."); return; }
     if (!currentPosition) {
       setError(gpsLoading
@@ -618,6 +714,25 @@ export default function MapPage() {
         />
       )}
 
+      {/* ══ DEMO — ARRIVAL SHORTCUT (set DEMO_MODE = false to remove) ══ */}
+      {DEMO_MODE && tripStarted && (
+        <button
+          onClick={handleDemoArrive}
+          className="btn-tap"
+          style={{
+            position: "fixed", top: 16, right: 16, zIndex: 90,
+            padding: "8px 13px", borderRadius: 12,
+            background: "rgba(30,10,50,0.92)",
+            border: "1px solid rgba(167,139,250,0.4)",
+            color: "#c4b5fd", fontSize: 11, fontWeight: 700,
+            letterSpacing: "0.08em", textTransform: "uppercase",
+            cursor: "pointer", backdropFilter: "blur(12px)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+          }}>
+          ⚑ Demo: Arrive
+        </button>
+      )}
+
       {/* ══ STEPS 1 & 2 — PLANNER OVERLAY ══ */}
       {showPlanner && (
         <div role="main" aria-label="Route planner" className="absolute inset-0 z-20 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" as const }}>
@@ -703,6 +818,72 @@ export default function MapPage() {
           onPlanNew={() => { setShowArrival(false); setRouteData(null); setDestination(""); setShowPlanner(true); }}
           onDashboard={() => { setShowArrival(false); router.push("/dashboard"); }}
         />
+      )}
+
+      {/* ══ ADAPTIVE ROUTE SUGGESTION BANNER ══ */}
+      {tripStarted && adaptiveSuggestion && (
+        <div className="panel-slide-in" style={{
+          position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)",
+          zIndex: 85, maxWidth: 390, width: "calc(100% - 32px)",
+          background: "rgba(6,26,54,0.97)",
+          border: "1px solid rgba(56,189,248,0.4)",
+          borderRadius: 20, padding: "14px 16px",
+          backdropFilter: "blur(24px)",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(56,189,248,0.08)",
+        }}>
+          {/* Header */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <span style={{ fontSize: 20, lineHeight: 1, flexShrink: 0 }}>⚡</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc", margin: 0 }}>Better Route Detected</p>
+              <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {adaptiveSuggestion.message}
+              </p>
+            </div>
+            {adaptiveSuggestion.newRisk && (() => {
+              const r = adaptiveSuggestion.newRisk;
+              return (
+                <span style={{ flexShrink: 0, padding: "2px 9px", borderRadius: 99, fontSize: 11, fontWeight: 700,
+                  background: r === "Low" ? "#10b981" : r === "Medium" ? "#eab308" : "#ef4444",
+                  color: r === "Medium" ? "#0f172a" : "#fff" }}>
+                  {r}
+                </span>
+              );
+            })()}
+          </div>
+          {/* Stat row */}
+          {(adaptiveSuggestion.newEta !== null || adaptiveSuggestion.timeSaving !== null) && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              {adaptiveSuggestion.newEta !== null && (
+                <div style={{ flex: 1, borderRadius: 12, padding: "7px 10px", background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.07)", textAlign: "center" }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 3 }}>New ETA</p>
+                  <p className="font-orbitron" style={{ fontSize: 17, fontWeight: 800, color: "#f8fafc", lineHeight: 1 }}>{adaptiveSuggestion.newEta}<span style={{ fontSize: 9, color: "#64748b", marginLeft: 2 }}>min</span></p>
+                </div>
+              )}
+              {adaptiveSuggestion.timeSaving !== null && (
+                <div style={{ flex: 1, borderRadius: 12, padding: "7px 10px", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.25)", textAlign: "center" }}>
+                  <p style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 3 }}>Time Saved</p>
+                  <p className="font-orbitron" style={{ fontSize: 17, fontWeight: 800, color: "#10b981", lineHeight: 1 }}>↓ {adaptiveSuggestion.timeSaving}<span style={{ fontSize: 9, color: "#64748b", marginLeft: 2 }}>min</span></p>
+                </div>
+              )}
+            </div>
+          )}
+          {/* Action buttons */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={handleApplyAdaptive} className="btn-tap"
+              style={{ flex: 1, padding: "11px", borderRadius: 14, border: "none",
+                background: "linear-gradient(90deg,#06b6d4,#3b82f6)",
+                color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+              Apply Route
+            </button>
+            <button onClick={handleDismissAdaptive} className="btn-tap"
+              style={{ padding: "11px 16px", borderRadius: 14,
+                border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)",
+                color: "#64748b", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+              Dismiss
+            </button>
+          </div>
+        </div>
       )}
 
       {/* ══ RE-EVALUATION TOAST ══ */}

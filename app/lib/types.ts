@@ -73,6 +73,17 @@ export type ProfileData = {
 
 export type RiskBadge = { bg: string; text: string };
 
+export type AdaptiveSuggestion = {
+  reason: "faster_route" | "eta_drift" | "risk_worsened" | "weather";
+  altRouteIndex: number;
+  timeSaving: number | null;
+  newEta: number | null;
+  newRisk: RiskLevel | null;
+  routeSummary: string | null;
+  message: string;
+  freshRoutes: AlternativeRoute[];
+};
+
 export type LocalEvent = {
   id: string;
   name: string;
