@@ -131,6 +131,10 @@ export default function MapView({
   const routeCameraTimeoutRef = useRef<number[]>([]);
   const previousUserPosRef   = useRef<LatLng | null>(null);
   const lastNavPanRef        = useRef<number>(0);
+  // Suspends auto-follow while the user is actively panning/zooming so a
+  // mid-trip pinch or pan isn't immediately yanked back by the next GPS tick.
+  // Cleared by recenter (explicit re-engage) and on trip start.
+  const userInteractingUntilRef = useRef<number>(0);
   // GSAP tween refs — killed before starting a new one to prevent conflicts
   const cameraPanTweenRef    = useRef<gsap.core.Tween | null>(null);
   const zoomTweenRef         = useRef<gsap.core.Tween | null>(null);
@@ -156,6 +160,14 @@ export default function MapView({
     if (routeData?.origin_position) return routeData.origin_position;
     return userPos || lipaCenter;
   }, [tripStarted, userPos, animatedPath, routeData?.origin_position]);
+
+  // Capture the *initial* map center once. Passing `center` as a controlled
+  // prop would re-apply setCenter on every GPS tick (userPos → new ref each
+  // tick → mapCenter changes → <GoogleMap> snaps the camera). All ongoing
+  // camera moves are handled imperatively below — fitBounds, panTo, GSAP
+  // tweens — so the React `center` prop only needs to seed the first frame.
+  const initialCenterRef = useRef<LatLng | null>(null);
+  if (!initialCenterRef.current) initialCenterRef.current = mapCenter;
 
   // ── Route polyline animation ─────────────────────────────────────────────
   useEffect(() => {
@@ -210,6 +222,11 @@ export default function MapView({
   useEffect(() => {
     if (!mapRef.current || !tripStarted || !userPos || !mapsReady) return;
 
+    // Bail while the user is actively interacting — pinch/pan/wheel set this
+    // ref via listeners attached in handleMapLoad. Without this guard the
+    // next GPS tick would yank the camera back mid-gesture.
+    if (Date.now() < userInteractingUntilRef.current) return;
+
     const now = Date.now();
     if (now - lastNavPanRef.current < 800) return;
     lastNavPanRef.current = now;
@@ -232,31 +249,70 @@ export default function MapView({
       map.panTo(userPos);
     }
 
-    // Smooth zoom up to navigation level
-    const currentZoom = map.getZoom() ?? 15;
-    if (currentZoom < 17) {
-      if (zoomTweenRef.current) zoomTweenRef.current.kill();
-      const zObj = { z: currentZoom };
-      zoomTweenRef.current = gsap.to(zObj, {
-        z: 17,
-        duration: 0.5,
-        ease: "power2.out",
-        onUpdate: () => map.setZoom(zObj.z),
-      }) as gsap.core.Tween;
-    }
+    // BUG FIX: zoom, heading, and tilt USED to be set here on every GPS tick.
+    // That's what caused the "after zooming out, it keeps zooming in" bug —
+    // every ~1s the nav follow would yank zoom back to 17. Those concerns
+    // now live in their own effects below so they don't fight user intent.
+  }, [tripStarted, userPos, mapsReady]);
 
-    if (gyroEnabled) {
-      map.setHeading(heading);
-      map.setTilt(45);
-    } else {
-      map.setHeading(0);
-      map.setTilt(0);
-    }
-  }, [tripStarted, userPos, gyroEnabled, heading, mapsReady]);
+  // ── Camera: trip-start one-shot zoom ─────────────────────────────────────
+  // Fires ONCE when a trip begins. After this, zoom is fully user-controlled
+  // (pinch, scroll, FABs). The only other path that changes zoom is a
+  // recenter tap (explicit user intent) or a zoomRequest from the FABs.
+  useEffect(() => {
+    if (!tripStarted || !mapRef.current || !mapsReady) return;
+    // Starting a trip is an explicit re-engage — clear any leftover
+    // interaction lockout from the planning view so follow kicks in now.
+    userInteractingUntilRef.current = 0;
+    const map = mapRef.current;
+    const currentZoom = map.getZoom() ?? 15;
+    if (currentZoom >= 17) return;
+
+    if (zoomTweenRef.current) zoomTweenRef.current.kill();
+    const zObj = { z: currentZoom };
+    zoomTweenRef.current = gsap.to(zObj, {
+      z: 17,
+      duration: 0.7,
+      ease: "power2.out",
+      onUpdate: () => map.setZoom(zObj.z),
+    }) as gsap.core.Tween;
+    // Deliberately NOT depending on userPos — this runs once per trip.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripStarted, mapsReady]);
+
+  // ── Heading — updates each tick; smoothHeading already damps GPS jitter ─
+  useEffect(() => {
+    if (!mapRef.current || !mapsReady) return;
+    const map = mapRef.current;
+    map.setHeading((tripStarted && gyroEnabled) ? heading : 0);
+  }, [heading, gyroEnabled, tripStarted, mapsReady]);
+
+  // ── Tilt — GSAP transition when gyro toggles (was a hard 0↔45 jump) ─────
+  const tiltTweenRef = useRef<gsap.core.Tween | null>(null);
+  useEffect(() => {
+    if (!mapRef.current || !mapsReady) return;
+    const map = mapRef.current;
+    const currentTilt = map.getTilt?.() ?? 0;
+    const targetTilt  = (tripStarted && gyroEnabled) ? 45 : 0;
+    if (Math.abs(currentTilt - targetTilt) < 0.5) return;
+
+    if (tiltTweenRef.current) tiltTweenRef.current.kill();
+    const tObj = { t: currentTilt };
+    tiltTweenRef.current = gsap.to(tObj, {
+      t: targetTilt,
+      duration: 0.55,
+      ease: "power2.inOut",
+      onUpdate: () => map.setTilt(tObj.t),
+    }) as gsap.core.Tween;
+  }, [gyroEnabled, tripStarted, mapsReady]);
 
   // ── Camera: recenter button — GSAP smooth pan ────────────────────────────
   useEffect(() => {
     if (!mapRef.current || !userPos || recenterRequest === 0 || !mapsReady) return;
+
+    // Recenter is the explicit "re-engage follow" gesture — drop any pending
+    // interaction lockout so subsequent GPS ticks resume auto-follow.
+    userInteractingUntilRef.current = 0;
 
     const map = mapRef.current;
 
@@ -288,14 +344,10 @@ export default function MapView({
       }) as gsap.core.Tween;
     }
 
-    if (tripStarted && gyroEnabled) {
-      map.setHeading(heading);
-      map.setTilt(45);
-    } else {
-      map.setHeading(0);
-      map.setTilt(0);
-    }
-  }, [recenterRequest, userPos, tripStarted, gyroEnabled, heading, mapsReady]);
+    // Heading + tilt are handled by their own dedicated effects; recenter
+    // intentionally doesn't touch them so those effects remain the single
+    // source of truth and we don't double-drive the same property.
+  }, [recenterRequest, userPos, tripStarted, mapsReady]);
 
   // ── Zoom in / out requests — GSAP smooth zoom ───────────────────────────
   useEffect(() => {
@@ -347,14 +399,38 @@ export default function MapView({
     return () => {
       cameraPanTweenRef.current?.kill();
       zoomTweenRef.current?.kill();
+      tiltTweenRef.current?.kill();
       if (animationRef.current) window.clearInterval(animationRef.current);
     };
   }, []);
 
   const handleMapLoad = (map: google.maps.Map) => {
     mapRef.current = map;
+    // `dragstart` fires for single-finger pan; pinch-zoom and wheel-zoom
+    // don't trip it, so those are handled by native listeners on the
+    // container div (see effect below).
+    map.addListener("dragstart", () => {
+      userInteractingUntilRef.current = Date.now() + 8000;
+    });
     setMapsReady(true);
   };
+
+  // Pinch + scroll-wheel zoom listeners — Google Maps swallows these before
+  // they bubble to React handlers, so we attach passively on the container
+  // and bump the interaction window. 8s gives the user time to read what
+  // they zoomed to before the next GPS tick re-engages follow.
+  useEffect(() => {
+    const el = mapContainerRef.current;
+    if (!el) return;
+    const bump = () => { userInteractingUntilRef.current = Date.now() + 8000; };
+    const onTouch = (e: TouchEvent) => { if (e.touches.length >= 2) bump(); };
+    el.addEventListener("wheel", bump, { passive: true });
+    el.addEventListener("touchstart", onTouch, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", bump);
+      el.removeEventListener("touchstart", onTouch);
+    };
+  }, []);
 
   // ── Loading placeholder (Maps JS API not yet ready) ──────────────────────
   if (!isLoaded) {
@@ -386,7 +462,7 @@ export default function MapView({
     <div ref={mapContainerRef} style={{ position: "absolute", inset: 0, willChange: "opacity" }}>
       <GoogleMap
         mapContainerStyle={containerStyle}
-        center={mapCenter}
+        center={initialCenterRef.current ?? mapCenter}
         zoom={15}
         onLoad={handleMapLoad}
         options={{
