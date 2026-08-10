@@ -294,46 +294,6 @@ export default function LoginPage() {
             <span style={{ fontSize: 12, fontWeight: 600, color: "#94a3b8", fontFamily: "'DM Sans', sans-serif" }}>Lipa City, Batangas</span>
           </div>
 
-          {/* ── Logo ── */}
-          <div
-            ref={logoRef}
-            style={{
-              position: "relative", zIndex: 20,
-              display: "flex", flexDirection: "column", alignItems: "center",
-              paddingBottom: 8,
-              opacity: 0,
-              willChange: "transform, opacity",
-            }}
-          >
-            {/* Ambient glow */}
-            <div
-              ref={logoGlowRef}
-              style={{
-                position: "absolute", width: 120, height: 120, borderRadius: "50%",
-                background: "radial-gradient(circle, rgba(6,182,212,0.32) 0%, transparent 70%)",
-                filter: "blur(20px)", transform: "translate3d(0,10px,0)",
-                opacity: 0, willChange: "opacity",
-                pointerEvents: "none",
-              }}
-            />
-            {/* Icon box */}
-            <div style={{
-              width: 74, height: 74, borderRadius: 22,
-              background: "linear-gradient(135deg, #10b981 0%, #06b6d4 50%, #6366f1 100%)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow:
-                "0 12px 40px rgba(6,182,212,0.38), 0 4px 12px rgba(0,0,0,0.4)," +
-                "-4px -4px 8px rgba(255,255,255,0.05), 4px 4px 12px rgba(0,0,0,0.5)",
-              position: "relative", zIndex: 1,
-            }}>
-              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-                <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-                <line x1="12" y1="22.08" x2="12" y2="12"/>
-              </svg>
-            </div>
-          </div>
-
           {/* ── Login card ── */}
           <div
             ref={cardRef}
