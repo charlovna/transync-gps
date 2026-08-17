@@ -402,16 +402,19 @@ Each `WaypointRow` in PlannerPanel has its own identical Autocomplete instance, 
 ## 12. AI ADVISORY LAYER
 
 ### Architecture:
-- **Next.js API route:** `app/api/advisory/route.ts` — server-side, keeps `ANTHROPIC_API_KEY` secret
-- **Model:** `claude-sonnet-4-6` via `@anthropic-ai/sdk`
-- **Trigger:** Called non-blocking immediately after `setRouteData(data)` in `handleGetRoute`
-- **Transport:** Streams plain text → smooth typewriter effect in the browser
+- **Shared Express endpoint:** `POST /advisory` in `transync-backend/server.js` — server-side, keeps `ANTHROPIC_API_KEY` secret. Moved out of the Next.js app so both the web client and the Flutter client can call the same backend (FR-30).
+- **Model:** `claude-sonnet-4-6` via `@anthropic-ai/sdk` (now a `transync-backend` dependency — removed from `transync-gps`)
+- **Trigger:** Called non-blocking immediately after `setRouteData(data)` in `handleGetRoute` (`app/map/page.tsx`, via `fetchAiInsight`)
+- **Transport:** Streams plain text over chunked transfer encoding → smooth typewriter effect in the browser
 
-### API route:
-- POST — accepts `{ destination, eta_minutes, risk_level, advisory_text, weather }`
-- Uses `client.messages.stream()` → pipes `text_delta` chunks into a `ReadableStream`
-- Returns `Content-Type: text/plain; charset=utf-8`
+### Endpoint:
+- `POST ${NEXT_PUBLIC_BACKEND_API_URL}/advisory` — accepts `{ destination, eta_minutes, risk_level, advisory_text, weather, nearest_event }`
+- No auth — public, same as `/route` and `/weather`
+- Uses `anthropic.messages.stream()` → writes `text_delta` chunks directly to the response with `res.write()`
+- Response headers: `Content-Type: text/plain; charset=utf-8`, `Transfer-Encoding: chunked`, `X-Accel-Buffering: no`
 - `max_tokens: 160`, 2-sentence constraint
+- On error before any chunk is written: `res.status(500).json({ error })`. On error mid-stream: `res.end()` — never sends a JSON body after chunked headers have already gone out.
+- **Former location (removed):** `transync-gps/app/api/advisory/route.ts` — deleted along with the now-empty `app/api/advisory/` folder once the Express endpoint was verified working.
 
 ### Double-invoke guard (React StrictMode):
 ```tsx
@@ -462,9 +465,10 @@ Buffer fills from network stream; typewriter interval reads it. Decoupled — ty
 
 ### Env var:
 ```
-# transync-gps/.env.local (server-side only — NOT NEXT_PUBLIC_)
+# transync-backend/.env — NOT in transync-gps anymore
 ANTHROPIC_API_KEY=sk-ant-...
 ```
+Also set on Render for the deployed backend. Removed from `transync-gps/.env.local` — the frontend no longer needs it. **TODO:** also remove `ANTHROPIC_API_KEY` from Vercel's env vars for this project (see §27 checklist — that line is now stale in the opposite direction: this key should NOT be set in Vercel anymore).
 
 ---
 

@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
     "@gsap/react": "^2.1.2",
     "@react-google-maps/api": "^2.20.8",
     "axios": "^1.13.5",

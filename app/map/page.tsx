@@ -475,7 +475,7 @@ export default function MapPage() {
     };
 
     try {
-      const res = await fetch("/api/advisory", {
+      const res = await fetch(`${backendUrl}/advisory`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
