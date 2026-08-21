@@ -477,7 +477,9 @@ export default function MapPage() {
     try {
       const res = await fetch(`${backendUrl}/advisory`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        // /advisory is JWT protected now. Every call spends Anthropic tokens, so
+        // leaving it open let any anonymous caller bill the project.
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
         body: JSON.stringify({
           destination: data.destination_label || destination,
           eta_minutes: data.eta_minutes,
